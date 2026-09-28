@@ -379,6 +379,13 @@ func (ls *labelStore) get(user string) (Label, bool) {
 	return l, ok
 }
 
+// has reports whether the account under this safe name carries a label.
+func (ls *labelStore) has(key string) bool {
+	ls.mu.Lock()
+	defer ls.mu.Unlock()
+	return ls.m[key].Label != ""
+}
+
 func (ls *labelStore) set(l Label) error {
 	ls.mu.Lock()
 	defer ls.mu.Unlock()
@@ -473,14 +480,24 @@ func (s *Server) handleRecheck(w http.ResponseWriter, r *http.Request) {
 // ---- export ----
 
 // handleExport zips the captures, labels and a summary: everything needed to
-// calibrate the rules on these accounts elsewhere.
+// calibrate the rules on these accounts elsewhere. With ?only=labeled only
+// the captures of labeled accounts go in, which keeps the file small enough
+// to send; the summary still lists every account.
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	labeledOnly := r.URL.Query().Get("only") == "labeled"
+	name := "lfscan-calibration"
+	if labeledOnly {
+		name += "-labeled"
+	}
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="lfscan-calibration-%s.zip"`, time.Now().UTC().Format("20060102-1504")))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-%s.zip"`, name, time.Now().UTC().Format("20060102-1504")))
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 	files, _ := filepath.Glob(filepath.Join(s.dataDir, "checks", "*.json.gz"))
 	for _, f := range files {
+		if labeledOnly && !s.labels.has(strings.TrimSuffix(filepath.Base(f), ".json.gz")) {
+			continue
+		}
 		if err := addFile(zw, "checks/"+filepath.Base(f), f); err != nil {
 			s.log.Warn("export", "file", f, "err", err)
 		}
@@ -492,9 +509,9 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := csv.NewWriter(cw)
-	c.Write([]string{"user", "decision", "score", "label", "note", "scrobbles", "adjusted", "excess_share", "peak_per_day", "signals"})
+	c.Write([]string{"user", "decision", "score", "label", "note", "capture", "scrobbles", "adjusted", "excess_share", "peak_per_day", "signals"})
 	for _, a := range acc {
-		c.Write([]string{a.User, a.Decision, strconv.Itoa(a.Score), a.Label, a.Note, strconv.FormatInt(a.Scrobbles, 10),
+		c.Write([]string{a.User, a.Decision, strconv.Itoa(a.Score), a.Label, a.Note, strconv.FormatBool(a.Capture), strconv.FormatInt(a.Scrobbles, 10),
 			strconv.FormatInt(a.Adjusted, 10), fmt.Sprintf("%.4f", a.ExcessShare), fmt.Sprintf("%.0f", a.PeakPerDay), strings.Join(a.Signals, "; ")})
 	}
 	c.Flush()

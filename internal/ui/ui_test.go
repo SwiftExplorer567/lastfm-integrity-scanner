@@ -170,10 +170,33 @@ func TestConsoleFlow(t *testing.T) {
 			t.Errorf("human label not cleared: %q", a.Label)
 		}
 	}
+	// The labeled export leaves out the captures of unlabeled accounts.
+	if got := zipNames(t, srv, "/api/export?only=labeled"); !got["checks/bot.json.gz"] || got["checks/human.json.gz"] || !got["summary.csv"] {
+		t.Errorf("labeled export has %v", got)
+	}
 	idx := call(t, srv, "GET", "/", "", nil)
 	if !strings.HasPrefix(idx.Header.Get("Content-Type"), "text/html") {
 		t.Error("index not served")
 	}
+}
+
+func zipNames(t *testing.T, srv *httptest.Server, path string) map[string]bool {
+	t.Helper()
+	res, err := http.Get(srv.URL + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, f := range zr.File {
+		names[f.Name] = true
+	}
+	return names
 }
 
 func TestConsoleWithoutAPIKey(t *testing.T) {

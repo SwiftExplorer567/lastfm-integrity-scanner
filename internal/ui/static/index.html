@@ -103,7 +103,8 @@ td.user{max-width:170px;overflow:hidden;text-overflow:ellipsis;font-family:var(-
   <span class="pill" id="ratePill" hidden><span id="rateText"></span></span>
   <span class="spacer"></span>
   <button id="recheckBtn" title="Re-score every saved capture with the current rules. No Last.fm requests.">Re-score all</button>
-  <a class="btn" href="/api/export" download title="Saved captures, your labels and a summary CSV: everything needed to tune the rules">Export calibration zip</a>
+  <a class="btn" id="exportBtn" href="/api/export?only=labeled" download title="Your labels, a summary CSV of every account, and the saved Last.fm data of the accounts you labeled: small enough to send">Export labeled</a>
+  <a class="small muted" href="/api/export" download title="Saved Last.fm data of every account: can be large" style="color:var(--muted)">export all</a>
   <button class="ghost" id="helpBtn" title="Keyboard shortcuts">?</button>
 </div>
 
@@ -321,8 +322,15 @@ function renderChips() {
   $("#labChips").innerHTML = lab.map(([k, l, n]) =>
     `<button class="chip ${state.lab === k ? "on" : ""} ${k === "disagree" && n ? "warn" : ""}" data-lab="${k}" ${k === "disagree" ? 'title="Labeled fake but passed, or labeled honest but held back"' : ""}>${l}<b>${n}</b></button>`).join("");
 
+  const labeled = acc.filter(a => a.label);
+  $("#exportBtn").textContent = labeled.length ? `Export labeled (${labeled.length})` : "Export labeled";
+  // Only accounts with saved Last.fm data can be re-scored or sent for calibration.
+  state.noCapture = labeled.filter(a => !a.capture).map(a => a.user);
+  const recap = state.noCapture.length ? `<span class="warnc">${state.noCapture.length} labeled account${state.noCapture.length === 1 ? " has" : "s have"} no saved Last.fm data
+    <button class="small" id="recapBtn" ${state.apiKey ? "" : "disabled"}>check again to save it</button></span>` : "";
   const fake = acc.filter(a => a.label === "fake"), honest = acc.filter(a => a.label === "honest");
   if (!fake.length && !honest.length) {
+    if (recap) { $("#agree").innerHTML = recap; return; }
     $("#agree").innerHTML = `<span>Label accounts (<kbd>f</kbd> fake, <kbd>h</kbd> honest) to see how well the rules agree with you.</span>`;
     return;
   }
@@ -330,8 +338,15 @@ function renderChips() {
   const missed = fake.filter(a => a.decision === "pass").length;
   const falsePos = honest.filter(a => a.decision === "block").length, heldHonest = honest.filter(a => a.decision === "review").length;
   $("#agree").innerHTML = (fake.length ? `<span>Fakes: <b>${caught}</b> blocked, <b>${held}</b> in review, <b class="${missed ? "bad" : ""}">${missed}</b> passed</span>` : "") +
-    (honest.length ? `<span>Honest: <b>${honest.length - falsePos - heldHonest}</b> passed, <b>${heldHonest}</b> in review, <b class="${falsePos ? "bad" : ""}">${falsePos}</b> blocked</span>` : "");
+    (honest.length ? `<span>Honest: <b>${honest.length - falsePos - heldHonest}</b> passed, <b>${heldHonest}</b> in review, <b class="${falsePos ? "bad" : ""}">${falsePos}</b> blocked</span>` : "") + recap;
 }
+$("#agree").addEventListener("click", async e => {
+  if (e.target.id !== "recapBtn" || !state.noCapture.length) return;
+  try {
+    const r = await api("/api/check", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({users: state.noCapture.join("\n"), force: true})});
+    toast(`${r.queued} check${r.queued === 1 ? "" : "s"} queued`); lastDone = -1;
+  } catch (err) { toast(err.message, true); }
+});
 $("#decChips").onclick = e => { const b = e.target.closest("[data-dec]"); if (b) { state.dec = b.dataset.dec; store.set("dec", state.dec); renderList(); } };
 $("#labChips").onclick = e => { const b = e.target.closest("[data-lab]"); if (b) { state.lab = b.dataset.lab; store.set("lab", state.lab); renderList(); } };
 $("#q").oninput = e => { state.q = e.target.value; renderList(); };

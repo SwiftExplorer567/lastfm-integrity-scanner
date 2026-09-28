@@ -146,7 +146,7 @@ A local page for the whole review loop, on the same `data/` folder the CLI uses 
 - **Evidence**: the selected account's report opens beside the list, with downloads (HTML, PNG, PDF, JSON) and a Last.fm link. The report shows why it was decided, the whole history from Last.fm's exact counts, every window the check read coloured by what each play was (one player, second player, duplicate, echo, impossible), and for the most suspicious windows the densest 15 minutes laid out on two players plus the plays themselves.
 - **Labels**: mark accounts **fake**, **honest** or **unsure** with a note (`f` / `h` / `u`, `n` for the note, `j` / `k` to move). Labels are saved in `data/labels.json`. The console counts how many of your fakes were blocked or passed and how many honest accounts were held back, and the **Disagrees** filter lists exactly those.
 - **Re-score all** runs every saved capture (`data/checks`) through the current rules without asking Last.fm, and lists what changed next to your labels.
-- **Export calibration zip**: captures, labels and a summary CSV, everything needed to tune the rules on your accounts.
+- **Export labeled**: your labels, a summary CSV of every account, and the saved Last.fm data (captures) of the accounts you labeled. Each capture is roughly 100–300 KB, so this stays small enough to send. **export all** adds every capture and can reach tens of MB. A labeled account checked before captures existed has none; the console lists these and re-checks them in one click.
 
 The console has no login: it listens on 127.0.0.1 only. Without `LASTFM_API_KEY` it still shows, labels, re-scores and exports saved checks.
 
