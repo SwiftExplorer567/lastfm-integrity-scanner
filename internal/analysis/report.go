@@ -209,13 +209,14 @@ type Gate struct {
 	Decision string `json:"decision"`
 	Reason   string `json:"reason"`
 
-	Requests    int   `json:"requests"`
-	ElapsedMS   int64 `json:"elapsed_ms"`
-	Complete    bool  `json:"complete"`
-	Periods     int   `json:"periods"`
-	PeriodsRead int   `json:"periods_read"`
-	SampledPlay int   `json:"sampled_plays"`
-	Windows     int   `json:"windows"`
+	Requests    int     `json:"requests"`
+	ElapsedMS   int64   `json:"elapsed_ms"`
+	Complete    bool    `json:"complete"`
+	Periods     int     `json:"periods"`
+	PeriodsRead int     `json:"periods_read"`
+	SampledPlay int     `json:"sampled_plays"`
+	Windows     int     `json:"windows"`
+	RoundsMS    []int64 `json:"rounds_ms"` // wall time of each request round
 
 	// Lifetime per-song totals (user.getTopTracks, period=overall).
 	DistinctTracks  int64           `json:"distinct_tracks"`

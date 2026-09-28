@@ -26,14 +26,18 @@ import (
 //     songs need more hours than the account has existed.
 //  2. The account's life is cut into ~24 periods; one request per period
 //     gives its exact play count (the whole-history chart) and a window of
-//     up to 1,000 consecutive plays from it (evidence).
+//     consecutive plays from it (evidence; 500 by default).
 //  3. The densest periods are split into months, one request each, which
-//     pins down where the volume is and reads more windows there.
-//  4. One more window from the middle of the densest month.
+//     pins down where the volume is and reads more windows there; in the
+//     same round, a window from the middle of the densest periods.
+//
+// Rounds 3 and 4 of the first design were merged into one round after the
+// first real runs showed each round costs one full Last.fm round trip
+// (2–3 s for a 1,000-play page), whatever the number of requests in it.
 //
 // Every window goes through the same analysis as a full scan (double
 // scrobbles forgiven, a second player accepted, plays needing a third player
-// counted). About 40–60 requests, sent in parallel rounds, well inside
+// counted). About 20–40 requests, sent in 3 parallel rounds, well inside
 // Last.fm's allowance of short bursts.
 
 // CheckOptions tunes the pre-import check.
@@ -46,6 +50,8 @@ type CheckOptions struct {
 	// Refine is how many of the densest periods get split into months.
 	Refine int
 	// Window is how many consecutive plays each request reads (max 1000).
+	// Last.fm answers smaller pages faster; 500 keeps each round well under
+	// the deadline while still showing hours of consecutive plays.
 	Window int
 	// TopTracks is how many lifetime top tracks to read.
 	TopTracks int
@@ -65,7 +71,7 @@ func DefaultCheckOptions() CheckOptions {
 		Deadline:    9 * time.Second,
 		Periods:     24,
 		Refine:      2,
-		Window:      1000,
+		Window:      500,
 		TopTracks:   200,
 		MaxRequests: 64,
 		Workers:     16,
@@ -154,6 +160,14 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 	defer cancel()
 	c := s.Client
 	var requests atomic.Int32
+	// Wall time of each round, reported so slow Last.fm answers are visible.
+	started := time.Now()
+	var roundsMS []int64
+	lastLap := started
+	lap := func() {
+		roundsMS = append(roundsMS, time.Since(lastLap).Milliseconds())
+		lastLap = time.Now()
+	}
 
 	// Spend what the shared budget can give right now. With a queue of
 	// sign-ups the bucket runs low, and each check reads fewer periods (never
@@ -182,6 +196,7 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 	go func() { defer wg.Done(); top, distinct, topErr = c.TopTracks(ctx, user, "overall", o.TopTracks) }()
 	wg.Wait()
 	requests.Add(2)
+	lap()
 	if infoErr != nil {
 		return nil, fmt.Errorf("user %q: %w", user, infoErr)
 	}
@@ -258,28 +273,46 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 		jobs = append(jobs, job{u, 1})
 	}
 	round(jobs)
+	lap()
 	if private {
 		return nil, fmt.Errorf("user %q: %w", user, &lastfm.APIError{Code: lastfm.ErrLoginRequired, Message: "recent listening is hidden"})
 	}
 
-	// Round 3: split the densest multi-month periods into months.
-	hot := append([]*unit(nil), units...)
-	sort.SliceStable(hot, func(a, b int) bool { return hot[a].perDay() > hot[b].perDay() })
+	// Round 3, in one go: split the densest multi-month periods into months,
+	// and read a window from the middle of the densest periods (their newest
+	// plays alone might not show the rest). Skipped when round 2 was slow, so
+	// the check still answers inside the deadline with what it has.
 	jobs = nil
-	for _, u := range hot {
-		if len(jobs) >= refine*group || !u.ok || len(u.months) < 2 || u.total == 0 {
-			continue
+	if time.Since(started) < o.Deadline*55/100 {
+		hot := append([]*unit(nil), units...)
+		sort.SliceStable(hot, func(a, b int) bool { return hot[a].perDay() > hot[b].perDay() })
+		split := 0
+		for _, u := range hot {
+			if split >= refine || !u.ok || len(u.months) < 2 || u.total == 0 {
+				continue
+			}
+			split++
+			for _, m := range u.months {
+				sub := newUnit([]lastfm.MonthCount{m}, since, now, false)
+				u.refined = append(u.refined, sub)
+				jobs = append(jobs, job{sub, 1})
+			}
 		}
-		for _, m := range u.months {
-			sub := newUnit([]lastfm.MonthCount{m}, since, now, false)
-			u.refined = append(u.refined, sub)
-			jobs = append(jobs, job{sub, 1})
+		middles := 0
+		for _, u := range hot {
+			if middles == 2 {
+				break
+			}
+			if u.ok && u.total > int64(2*o.Window) {
+				pages := int((u.total + int64(o.Window) - 1) / int64(o.Window))
+				jobs = append(jobs, job{u, (pages + 1) / 2})
+				middles++
+			}
 		}
 	}
 	round(jobs)
+	lap()
 
-	// Round 4: a window from the middle of the densest months, where the
-	// newest plays alone might miss what the rest of the month looks like.
 	var leaves []*unit
 	for _, u := range units {
 		if len(u.refined) > 0 {
@@ -288,20 +321,12 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 			leaves = append(leaves, u)
 		}
 	}
-	sort.SliceStable(leaves, func(a, b int) bool { return leaves[a].perDay() > leaves[b].perDay() })
-	jobs = nil
-	for _, u := range leaves {
-		if len(jobs) == 2 {
-			break
-		}
-		if u.ok && u.total > int64(o.Window) {
-			pages := int((u.total + int64(o.Window) - 1) / int64(o.Window))
-			jobs = append(jobs, job{u, (pages + 1) / 2})
-		}
-	}
-	round(jobs)
 
-	return s.assemble(info, top, topErr, distinct, units, leaves, windows, since, now, int(requests.Load()), o)
+	r, err := s.assemble(info, top, topErr, distinct, units, leaves, windows, since, now, int(requests.Load()), o)
+	if r != nil {
+		r.Gate.RoundsMS = roundsMS
+	}
+	return r, err
 }
 
 type window struct {

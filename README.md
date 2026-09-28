@@ -17,11 +17,12 @@ demo-faker               score 100 Suspect   leaderboard: exclude 919,755
 | round | requests | what it gets |
 |---|---|---|
 | 1 | `user.getInfo`, `user.getTopTracks period=overall` | lifetime playcount, sign-up date, per-song lifetime totals with song lengths, number of distinct songs |
-| 2 | one `user.getRecentTracks` per period (the account's life cut into ~24 periods, `from`/`to`, `limit=1000`) | **exact** play count of each period (`@attr.total`), plus the newest ≤1,000 consecutive plays of each period as evidence |
-| 3 | the 2 densest periods split into months | exact monthly counts where it matters, plus more windows there |
-| 4 | a page from the middle of the 2 densest months | evidence from inside the hottest stretch, not only its end |
+| 2 | one `user.getRecentTracks` per period (the account's life cut into ~24 periods, `from`/`to`) | **exact** play count of each period (`@attr.total`), plus the newest 500 consecutive plays of each period as evidence |
+| 3 | the 2 densest periods split into months, and a page from the middle of the 2 densest periods | exact monthly counts where it matters, plus evidence from inside the hottest stretches |
 
-That is typically 20–40 requests in 4 parallel rounds.
+That is typically 20–40 requests in 3 parallel rounds. On the real API, one round costs one Last.fm round trip (about 2–3 s for a large page), whatever the number of requests in it. That is why the rounds are few and wide. Round 3 is skipped if rounds 1–2 already took more than 55% of the deadline. `gate.rounds_ms` in the JSON shows each round's wall time.
+
+Tuning: `LFSCAN_CHECK_WINDOW` (plays per window, default 500, max 1000), `LFSCAN_CHECK_PERIODS` (default 24) and `LFSCAN_CHECK_DEADLINE` (seconds, default 9).
 
 Every sampled window goes through the same analysis as a full scan: double scrobbles are forgiven, a second player is accepted, and plays that need a third player are counted. On top of that, the lifetime top songs give **proof that does not need the history**. Every scrobble needs some listening time (half the song, or 30 s when its length is unknown), so *"the top 200 songs alone need 148,784 hours; the account has existed for 43,824"* cannot be explained away.
 

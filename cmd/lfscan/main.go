@@ -82,7 +82,7 @@ func usage() {
   lfscan demo [-out dir]          reports for generated example accounts, no API needed
   lfscan demo-check [-out dir]    pre-import checks against a built-in fake Last.fm, no API needed
 
-Environment: LASTFM_API_KEY, LFSCAN_DATA_DIR (./data), LFSCAN_TOKEN, LFSCAN_RPS (5),
+Environment: LASTFM_API_KEY, LFSCAN_DATA_DIR (./data), LFSCAN_TOKEN, LFSCAN_RPS (4.5), LFSCAN_BURST (60),
 LFSCAN_WORKERS (8), LFSCAN_ADDR (:8080). A .env file in the working directory is read too.
 `)
 }
@@ -95,13 +95,18 @@ func newScanner() (*scanner.Scanner, error) {
 	client := lastfm.New(lastfm.Config{
 		APIKey:  key,
 		BaseURL: os.Getenv("LASTFM_BASE_URL"),
-		RPS:     envFloat("LFSCAN_RPS", 5),
-		Burst:   int(envFloat("LFSCAN_BURST", 10)),
+		RPS:     envFloat("LFSCAN_RPS", 4.5),
+		Burst:   int(envFloat("LFSCAN_BURST", 60)),
 	})
 	opts := scanner.DefaultOptions()
 	opts.Workers = int(envFloat("LFSCAN_WORKERS", float64(opts.Workers)))
 	opts.AutoFullMaxScrobbles = int64(envFloat("LFSCAN_AUTO_FULL_MAX", float64(opts.AutoFullMaxScrobbles)))
 	opts.DurationLookups = int(envFloat("LFSCAN_DURATION_LOOKUPS", float64(opts.DurationLookups)))
+	opts.Check.Window = int(envFloat("LFSCAN_CHECK_WINDOW", float64(opts.Check.Window)))
+	opts.Check.Periods = int(envFloat("LFSCAN_CHECK_PERIODS", float64(opts.Check.Periods)))
+	if d := envFloat("LFSCAN_CHECK_DEADLINE", 0); d > 0 {
+		opts.Check.Deadline = time.Duration(d * float64(time.Second))
+	}
 	return scanner.New(client, envStr("LFSCAN_DATA_DIR", "data"), opts)
 }
 
