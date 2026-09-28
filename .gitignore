@@ -1,0 +1,5 @@
+/bin/
+/data/
+/reports/
+.env
+*.tmp
