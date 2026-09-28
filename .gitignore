@@ -3,3 +3,4 @@
 /reports/
 .env
 *.tmp
+*.exe
