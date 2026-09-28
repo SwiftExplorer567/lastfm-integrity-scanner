@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/analysis"
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/lastfm"
@@ -127,6 +128,13 @@ func (s *Scanner) recheck(cp *Capture, o CheckOptions) (*analysis.Report, error)
 		r.Gate.RoundsMS = cp.RoundsMS
 		r.Gate.DecidedEarly = cp.Decided
 		r.Gate.Retries = cp.Retries
+		// A re-score describes the check that read the data: its time and
+		// how long its rounds took, not when the rules were run again.
+		r.GeneratedAt = time.Unix(cp.Now, 0).UTC()
+		r.Gate.ElapsedMS = 0
+		for _, ms := range cp.RoundsMS {
+			r.Gate.ElapsedMS += ms
+		}
 	}
 	return r, err
 }

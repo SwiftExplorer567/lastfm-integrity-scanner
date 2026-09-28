@@ -2,6 +2,7 @@
 //
 //	lfscan check <user>... [-format json,html,png] [-out dir]
 //	lfscan scan <user>... [-mode auto|full|quick] [-format html,pdf,png] [-out dir]
+//	lfscan ui [-addr 127.0.0.1:8090] [-demo]
 //	lfscan serve [-addr :8080]
 //	lfscan render <report.json> [-format html,pdf,png,svg] [-out dir]
 //	lfscan demo [-out dir]
@@ -37,6 +38,7 @@ import (
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/scanner"
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/server"
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/synth"
+	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/ui"
 )
 
 func main() {
@@ -57,6 +59,8 @@ func main() {
 		err = cmdRecheck(os.Args[2:])
 	case "serve":
 		err = cmdServe(ctx, os.Args[2:])
+	case "ui":
+		err = cmdUI(ctx, os.Args[2:])
 	case "render":
 		err = cmdRender(os.Args[2:])
 	case "demo":
@@ -80,6 +84,7 @@ func usage() {
 
   lfscan check <user>... [-file users.txt] [-format json,html,png] [-out dir]   pre-import check, seconds per account
   lfscan recheck [capture files or dirs]   re-score saved checks (data/checks) offline
+  lfscan ui [-addr 127.0.0.1:8090] [-demo]   local admin console: run checks, read evidence, label accounts
   lfscan scan <user>... [-mode auto|full|quick] [-format json,html,pdf,png,svg] [-out dir] [-refresh]
   lfscan serve [-addr :8080]
   lfscan render <report.json> [-format html,pdf,png,svg] [-out dir]
@@ -96,12 +101,20 @@ func newScanner() (*scanner.Scanner, error) {
 	if key == "" {
 		return nil, errors.New("LASTFM_API_KEY is not set")
 	}
-	client := lastfm.New(lastfm.Config{
+	return newScannerFor(newClient(key, os.Getenv("LASTFM_BASE_URL")), envStr("LFSCAN_DATA_DIR", "data"))
+}
+
+func newClient(key, baseURL string) *lastfm.Client {
+	return lastfm.New(lastfm.Config{
 		APIKey:  key,
-		BaseURL: os.Getenv("LASTFM_BASE_URL"),
+		BaseURL: baseURL,
 		RPS:     envFloat("LFSCAN_RPS", 4.5),
 		Burst:   int(envFloat("LFSCAN_BURST", 60)),
 	})
+}
+
+// newScannerFor applies the environment's options; client may be nil.
+func newScannerFor(client *lastfm.Client, dataDir string) (*scanner.Scanner, error) {
 	opts := scanner.DefaultOptions()
 	opts.Workers = int(envFloat("LFSCAN_WORKERS", float64(opts.Workers)))
 	opts.AutoFullMaxScrobbles = int64(envFloat("LFSCAN_AUTO_FULL_MAX", float64(opts.AutoFullMaxScrobbles)))
@@ -111,7 +124,7 @@ func newScanner() (*scanner.Scanner, error) {
 	if d := envFloat("LFSCAN_CHECK_DEADLINE", 0); d > 0 {
 		opts.Check.Deadline = time.Duration(d * float64(time.Second))
 	}
-	return scanner.New(client, envStr("LFSCAN_DATA_DIR", "data"), opts)
+	return scanner.New(client, dataDir, opts)
 }
 
 func cmdScan(ctx context.Context, args []string) error {
@@ -403,6 +416,92 @@ func cmdDemoCheck(ctx context.Context, args []string) error {
 		return err
 	}
 	return runChecks(ctx, s, names, fmts, *out)
+}
+
+// cmdUI runs the local admin console. Without an API key it still shows,
+// labels, re-scores and exports saved checks; -demo runs it against a
+// built-in fake Last.fm with generated accounts.
+func cmdUI(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("ui", flag.ExitOnError)
+	addr := fs.String("addr", envStr("LFSCAN_UI_ADDR", "127.0.0.1:8090"), "listen address (keep it on localhost: the console has no login)")
+	workers := fs.Int("workers", 2, "checks running at once")
+	demo := fs.Bool("demo", false, "use a built-in fake Last.fm with generated accounts, no API key needed")
+	fs.Parse(args)
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	var client *lastfm.Client
+	dataDir := envStr("LFSCAN_DATA_DIR", "data")
+	var demoUsers []string
+	if *demo {
+		url, names, closeMock := demoLastfm()
+		defer closeMock()
+		client = lastfm.New(lastfm.Config{APIKey: "demo", BaseURL: url, RPS: 50, Burst: 200})
+		dataDir = filepath.Join(os.TempDir(), "lfscan-ui-demo")
+		demoUsers = names
+	} else if key := os.Getenv("LASTFM_API_KEY"); key != "" {
+		client = newClient(key, os.Getenv("LASTFM_BASE_URL"))
+	} else {
+		log.Warn("LASTFM_API_KEY is not set: new checks cannot run; saved results, labels, recheck and export still work")
+	}
+	s, err := newScannerFor(client, dataDir)
+	if err != nil {
+		return err
+	}
+	// A batch of checks drains the rate budget; waiting for it keeps every
+	// account read in full instead of deciding on fewer periods.
+	s.Opts.Check.Patient = true
+	console, err := ui.New(s, *workers, log)
+	if err != nil {
+		return err
+	}
+	h := console.Handler()
+	if len(demoUsers) > 0 {
+		body := strings.NewReader(`{"users":"` + strings.Join(demoUsers, " ") + `"}`)
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/check", body))
+	}
+	srv := &http.Server{Addr: *addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shut)
+	}()
+	host := *addr
+	if strings.HasPrefix(host, ":") {
+		host = "localhost" + host
+	}
+	fmt.Fprintf(os.Stderr, "lfscan ui: open http://%s  (data: %s, Ctrl+C to stop)\n", host, dataDir)
+	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+// demoLastfm serves generated accounts of every kind from a fake Last.fm.
+func demoLastfm() (url string, names []string, closeFn func()) {
+	mock := mockfm.New()
+	mock.Latency = 120 * time.Millisecond
+	accounts := []struct {
+		name string
+		p    synth.Profile
+		days int
+	}{
+		{"demo-bot-4m", synth.Faker, 5 * 365},
+		{"demo-veteran", synth.Honest, 10 * 365},
+		{"demo-two-devices", synth.TwoDevices, 3 * 365},
+		{"demo-double-scrobbler", synth.DoubleScrobbler, 2 * 365},
+		{"demo-echo-scrobbler", synth.EchoScrobbler, 2 * 365},
+		{"demo-scripted", synth.Scripted, 365},
+		{"demo-newcomer", synth.Honest, 120},
+	}
+	for i, a := range accounts {
+		start := time.Now().AddDate(0, 0, -a.days-1)
+		g := synth.Generate(a.name, synth.Options{Profile: a.p, Seed: uint64(40 + i), Start: start, Days: a.days})
+		mock.AddUser(&mockfm.User{History: g.History, Registered: start.Unix(), Durations: g.Durations})
+		names = append(names, a.name)
+	}
+	srv := httptest.NewServer(mock)
+	return srv.URL, names, srv.Close
 }
 
 func cmdServe(ctx context.Context, args []string) error {

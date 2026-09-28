@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"io"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -128,6 +129,103 @@ var funcs = template.FuncMap{
 
 var htmlTmpl = template.Must(template.New("report").Funcs(funcs).Parse(reportTmpl))
 
+//go:embed check.html.tmpl
+var checkTmplSrc string
+
+var checkTmpl = template.Must(template.New("check").Funcs(funcs).Parse(checkTmplSrc))
+
+type checkView struct {
+	R           *analysis.Report
+	MonthSVG    template.HTML
+	OverviewSVG template.HTML
+	BudgetSVG   template.HTML
+	Classes     []struct{ Kind, Color, Label, Help string }
+	Focus       []focusView
+	FocusClean  bool
+	ReviewAt    int
+	SuspectAt   int
+}
+
+type focusView struct {
+	S           analysis.Sample
+	Excess      int
+	Dups        int
+	ActivitySVG template.HTML
+	LaneSVG     template.HTML
+	Rows        []zoomRow
+	Open        bool
+}
+
+type zoomRow struct {
+	Clock, Gap, Artist, Title, Label, Color string
+	Tight, Rapid                            bool
+}
+
+// newCheckView picks what the check report shows: up to three windows with
+// impossible plays or loops, or, for a clean account, its busiest window
+// for comparison.
+func newCheckView(r *analysis.Report) checkView {
+	g := r.Gate
+	v := checkView{
+		R:         r,
+		MonthSVG:  template.HTML(MonthChartSVG(r)),
+		ReviewAt:  analysis.ReviewAt,
+		SuspectAt: analysis.SuspectAt,
+		BudgetSVG: template.HTML(TimeBudgetSVG(g)),
+	}
+	for _, c := range classStyle {
+		v.Classes = append(v.Classes, struct{ Kind, Color, Label, Help string }{c.Kind, c.Color, c.Label, c.Help})
+	}
+	if len(g.Samples) > 0 {
+		v.OverviewSVG = template.HTML(SamplesOverviewSVG(g))
+	}
+	var detailed []analysis.Sample
+	for _, s := range g.Samples {
+		if len(s.Zoom) > 0 {
+			detailed = append(detailed, s)
+		}
+	}
+	sort.SliceStable(detailed, func(a, b int) bool {
+		if detailed[a].Suspicion != detailed[b].Suspicion {
+			return detailed[a].Suspicion > detailed[b].Suspicion
+		}
+		return detailed[a].PerHour > detailed[b].PerHour
+	})
+	var pick []analysis.Sample
+	for _, s := range detailed {
+		if s.Suspicion > 0.01 && len(pick) < 3 {
+			pick = append(pick, s)
+		}
+	}
+	if len(pick) == 0 && len(detailed) > 0 {
+		pick = append(pick, detailed[0])
+		v.FocusClean = true
+	}
+	for i, s := range pick {
+		f := focusView{
+			S: s, Excess: s.Counts[analysis.ClassExcess],
+			Dups:        s.Counts[analysis.ClassDuplicate] + s.Counts[analysis.ClassEcho],
+			ActivitySVG: template.HTML(ActivitySVG(s, r.Params.HourLimit)),
+			LaneSVG:     template.HTML(LaneSVG(s)),
+			Open:        i == 0 && !v.FocusClean,
+		}
+		var prev int64
+		for j, p := range s.Zoom {
+			gap := "–"
+			if j > 0 {
+				gap = fmt.Sprintf("%ds", p.TS-prev)
+			}
+			f.Rows = append(f.Rows, zoomRow{
+				Clock: time.Unix(p.TS, 0).UTC().Format("15:04:05"), Gap: gap, Artist: p.Artist, Title: p.Title,
+				Label: classLabel(p.Kind), Color: classColor(p.Kind), Rapid: p.Rapid, Tight: j > 0 && p.TS-prev < 15,
+			})
+			prev = p.TS
+		}
+		v.Focus = append(v.Focus, f)
+	}
+	return v
+}
+
 type htmlView struct {
 	R         *analysis.Report
 	MonthSVG  template.HTML
@@ -147,6 +245,9 @@ type htmlYear struct {
 type scaleEntry struct{ Color, Label string }
 
 func renderHTML(w io.Writer, r *analysis.Report) error {
+	if r.Gate != nil {
+		return checkTmpl.Execute(w, newCheckView(r))
+	}
 	v := htmlView{
 		R:         r,
 		MonthSVG:  template.HTML(MonthChartSVG(r)),

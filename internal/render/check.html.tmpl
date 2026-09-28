@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pre-import check · {{.R.User.Name}}</title>
+<style>
+:root{--bg:#0d1117;--panel:#131a22;--panel2:#171f29;--line:#243040;--text:#e6edf3;--muted:#8b98a9;--green:#22c55e;--amber:#f59e0b;--red:#f87171;--blue:#38bdf8;--violet:#a78bfa;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:1120px;margin:0 auto;padding:24px 16px 48px}
+header{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+header img{width:52px;height:52px;border-radius:50%;background:var(--panel2)}
+h1{margin:0;font-size:22px}
+.sub{color:var(--muted);font-size:12.5px}
+.badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11.5px;font-weight:650;vertical-align:middle;margin-left:6px;text-transform:uppercase;letter-spacing:.4px}
+.d-pass{background:#14532d;color:#86efac}.d-review{background:#78350f;color:#fcd34d}.d-block{background:#7f1d1d;color:#fecaca}.d-unknown{background:#374151;color:#e5e7eb}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:16px}
+.card h2{font-size:14px;margin:0 0 4px}
+.lead{color:var(--muted);font-size:12.5px;margin:0 0 12px;max-width:80ch}
+.hero{display:grid;grid-template-columns:1.3fr 1fr;gap:16px}
+@media(max-width:820px){.hero{grid-template-columns:1fr}}
+.verdict{border-width:2px}.verdict.d-pass{border-color:#166534;background:var(--panel)}.verdict.d-review{border-color:#92400e;background:var(--panel)}.verdict.d-block{border-color:#991b1b;background:var(--panel)}.verdict.d-unknown{background:var(--panel)}
+.verdict .dec{font:700 26px var(--mono);letter-spacing:1px}
+.verdict.d-pass .dec{color:var(--green)}.verdict.d-review .dec{color:var(--amber)}.verdict.d-block .dec{color:var(--red)}
+.verdict .score{color:var(--muted);font-size:12.5px;margin-top:2px}
+.facts{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.fact{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
+.fact .h{font-size:10.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--muted)}
+.fact .v{font:700 17px var(--mono);margin-top:2px}
+.fact .f{font-size:11.5px;color:var(--muted)}
+.fact.bad .v{color:var(--red)}
+.sig{display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);margin-bottom:7px}
+.sig .p{font:600 11px var(--mono);padding:2px 6px;border-radius:5px;background:#3b1219;color:var(--red);white-space:nowrap}
+.sig.k-volume .p{background:#3b2a0f;color:var(--amber)}.sig.k-pattern .p{background:#2e1f47;color:var(--violet)}.sig.k-benign .p{background:#0f2e22;color:var(--green)}
+.sig .t{font-weight:600;font-size:13px}.sig .d{color:var(--muted);font-size:12px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin:8px 0 2px}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.focus{border-top:1px solid var(--line);padding-top:14px;margin-top:14px}
+.focus:first-of-type{border-top:0;padding-top:0;margin-top:0}
+.focus h3{font-size:13px;margin:0 0 2px;font-family:var(--mono)}
+.stats{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:8px}
+.stats b{color:var(--text);font-family:var(--mono)}
+.stats b.bad{color:var(--red)}
+details{margin-top:8px}
+summary{cursor:pointer;color:var(--blue);font-size:12.5px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{color:var(--muted);font-weight:500;text-align:left;padding:5px 6px;border-bottom:1px solid var(--line)}
+td{padding:4px 6px;border-bottom:1px solid #1b2430}
+td.m{font-family:var(--mono);white-space:nowrap}
+td.r,th.r{text-align:right}
+td.hot{color:var(--red)}
+.chip{display:inline-block;padding:0 6px;border-radius:4px;font-size:11px;color:#0d1117;font-weight:600}
+.rapid{color:#fbbf24;font-size:11px;margin-left:4px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:820px){.two{grid-template-columns:1fr}}
+.bar{display:grid;grid-template-columns:70px 1fr 110px;gap:8px;align-items:center;font-size:12px;margin:5px 0}
+.bar .track{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden}
+.bar .fill{height:100%;background:#64748b}.bar .fill.hot{background:var(--red)}
+.bar .num{text-align:right;font-family:var(--mono);color:var(--muted)}
+dl.kv{display:grid;grid-template-columns:1fr auto;gap:5px 12px;margin:0;font-size:12.5px}
+dl.kv dt{color:var(--muted)}dl.kv dd{margin:0;text-align:right;font-family:var(--mono)}
+footer{color:var(--muted);font-size:11.5px;margin-top:18px;border-top:1px solid var(--line);padding-top:12px}
+@media print{body{background:#fff;color:#111}.card,.fact,.sig{background:#fff;border-color:#ccc;break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+{{$g := .R.Gate}}
+<header>
+  {{if .R.User.Image}}<img src="{{.R.User.Image}}" alt="">{{end}}
+  <div>
+    <h1>{{.R.User.Name}} <span class="badge d-{{$g.Decision}}">{{$g.Decision}}</span></h1>
+    <div class="sub">{{num .R.User.Playcount}} scrobbles{{if .R.User.Registered}} · joined {{date .R.User.Registered}}{{end}}{{if .R.User.Country}} · {{.R.User.Country}}{{end}} · checked {{.R.GeneratedAt.Format "2006-01-02 15:04 UTC"}} in {{printf "%.1f" (msec $g.ElapsedMS)}} s</div>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="card verdict d-{{$g.Decision}}">
+    <div class="dec">{{upper $g.Decision}}</div>
+    <div class="score">score {{.R.Score.Value}} / 100 · 0–{{sub .ReviewAt 1}} pass · {{.ReviewAt}}–{{sub .SuspectAt 1}} review · {{.SuspectAt}}+ block</div>
+    <p style="margin:10px 0 0">{{$g.Reason}}</p>
+  </div>
+  <div class="facts">
+    <div class="fact {{if gt .R.Stats.AvgPerDay 400.0}}bad{{end}}"><div class="h">Lifetime average</div><div class="v">{{num0 .R.Stats.AvgPerDay}}/day</div><div class="f">one person, all day: about 400</div></div>
+    <div class="fact {{if gt .R.Stats.PeakMonth.PerDay 600.0}}bad{{end}}"><div class="h">Busiest stretch</div><div class="v">{{num0 .R.Stats.PeakMonth.PerDay}}/day</div><div class="f">{{.R.Stats.PeakMonth.Month}}{{if .R.Stats.PeakMonth.Days}}, {{.R.Stats.PeakMonth.Days}} days{{end}}</div></div>
+    <div class="fact {{if gt .R.Integrity.ExcessShare 0.02}}bad{{end}}"><div class="h">Impossible plays</div><div class="v">{{pct .R.Integrity.ExcessShare}}</div><div class="f">of {{num .R.Integrity.PlaysAnalyzed}} plays read</div></div>
+    <div class="fact"><div class="h">Leaderboard count</div><div class="v">{{num .R.Leaderboard.AdjustedScrobbles}}</div><div class="f">{{pct .R.Leaderboard.RemovedShare}} removed as copies or impossible</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Why</h2>
+  <p class="lead">Every point of the score comes from one of these. Green lines are what was forgiven.</p>
+  {{range .R.Signals}}<div class="sig k-{{.Kind}}"><span class="p">{{if .Points}}+{{.Points}}{{else}}ok{{end}}</span><div><div class="t">{{.Title}}</div><div class="d">{{.Detail}}</div></div></div>
+  {{else}}<p class="lead">Nothing unusual.</p>{{end}}
+</div>
+
+<div class="card">
+  <h2>The whole history</h2>
+  <p class="lead">Plays a day, from Last.fm's own exact counts for each period (months where it got busy). Anything above the red line is more than one person can listen to.</p>
+  {{.MonthSVG}}
+</div>
+
+{{if $g.Samples}}
+<div class="card">
+  <h2>Every window read</h2>
+  <p class="lead">The check read {{len $g.Samples}} runs of consecutive plays from across the history. Each row is one run: how its plays were classified, and how fast they came. A person on one or two players fills rows with grey and blue.</p>
+  <div class="legend">{{range .Classes}}<span title="{{.Help}}"><i style="background:{{.Color}}"></i>{{.Label}}</span>{{end}}<span><i style="background:#fbbf24;height:3px"></i>same song seconds apart</span></div>
+  {{.OverviewSVG}}
+</div>
+{{end}}
+
+{{if .Focus}}
+<div class="card">
+  <h2>{{if .FocusClean}}A closer look, for comparison{{else}}Closest look at the evidence{{end}}</h2>
+  <p class="lead">{{if .FocusClean}}Nothing suspicious was found; this is the busiest stretch read, for comparison.{{else}}The windows with the most impossible plays. Top: plays per interval across the window. Middle: the densest 15 minutes, every play laid onto players. Bottom: the plays themselves.{{end}}</p>
+  {{range .Focus}}
+  <div class="focus">
+    <h3>{{datetime .S.From}} → {{datetime .S.To}}</h3>
+    <div class="stats">
+      <span><b>{{num .S.Plays}}</b> plays</span>
+      <span><b class="{{if gt .S.PerHour 60.0}}bad{{end}}">{{num0 .S.PerHour}}</b> an hour</span>
+      <span><b class="{{if .Excess}}bad{{end}}">{{num .Excess}}</b> impossible</span>
+      <span><b>{{num .Dups}}</b> copies</span>
+      <span><b>{{num .S.Rapid}}</b> same song seconds apart</span>
+    </div>
+    {{.ActivitySVG}}
+    {{.LaneSVG}}
+    <details {{if .Open}}open{{end}}><summary>{{len .Rows}} plays in this stretch</summary>
+      <table><tr><th>Time (UTC)</th><th class="r">Gap</th><th>Song</th><th>Verdict</th></tr>
+      {{range .Rows}}<tr><td class="m">{{.Clock}}</td><td class="m r {{if .Tight}}hot{{end}}">{{.Gap}}</td><td>{{.Artist}} — {{.Title}}</td><td><span class="chip" style="background:{{.Color}}">{{.Label}}</span>{{if .Rapid}}<span class="rapid">loop</span>{{end}}</td></tr>{{end}}
+      </table>
+    </details>
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+<div class="two">
+  <div class="card">
+    <h2>Listening time the top songs need</h2>
+    <p class="lead">From Last.fm's lifetime per-song totals. Each scrobble needs at least half the song (or {{.R.Params.MinPlaySeconds}} s when its length is unknown) before Last.fm accepts it.</p>
+    {{.BudgetSVG}}
+    <table style="margin-top:8px"><tr><th>Song</th><th class="r">Plays</th><th class="r">A day</th><th class="r">Least hours</th></tr>
+    {{range $g.TopTracks}}<tr><td>{{.Artist}} — {{.Title}}</td><td class="m r">{{num .Plays}}</td><td class="m r {{if gt .PerDay 50.0}}hot{{end}}">{{printf "%.1f" .PerDay}}</td><td class="m r">{{num .MinHours}}</td></tr>{{end}}
+    </table>
+  </div>
+  <div class="card">
+    <h2>Time between plays</h2>
+    <p class="lead">In the windows read. A song takes minutes; plays seconds apart are copies, skips, or software.</p>
+    {{range $i, $b := .R.Charts.Gaps}}<div class="bar"><span>{{$b.Label}}</span><div class="track"><div class="fill {{if lt $i 3}}hot{{end}}" style="width:{{barw $b.Share}}%"></div></div><span class="num">{{num $b.Count}} · {{pct $b.Share}}</span></div>{{end}}
+    <h2 style="margin-top:16px">How the check ran</h2>
+    <dl class="kv">
+      <dt>Requests / rounds</dt><dd>{{$g.Requests}} / {{range $i, $m := $g.RoundsMS}}{{if $i}} + {{end}}{{$m}}{{end}} ms</dd>
+      <dt>History periods read</dt><dd>{{$g.PeriodsRead}} / {{$g.Periods}}{{if not $g.Complete}} (partial){{end}}</dd>
+      <dt>Plays read</dt><dd>{{num $g.SampledPlay}} in {{$g.Windows}} windows</dd>
+      <dt>Distinct songs</dt><dd>{{num $g.DistinctTracks}}</dd>
+      {{with $g.Retries}}<dt>Last.fm errors retried</dt><dd>{{range $k, $v := .}}{{$k}} {{$v}} {{end}}</dd>{{end}}
+      {{if $g.DecidedEarly}}<dt>Third round</dt><dd>skipped, already decided</dd>{{end}}
+    </dl>
+  </div>
+</div>
+
+<footer>
+  Method: copies of one song within {{.R.Params.DupWindowSeconds}} s, and lone pairs of different songs within {{.R.Params.PairSeconds}} s, are one play recorded twice; they are removed and not scored. Every other play is credited with the least time Last.fm needs before it accepts it (half the song, at most 4 minutes; {{.R.Params.MinPlaySeconds}} s when the length is unknown) and laid onto at most {{.R.Params.Devices}} players; a play with no free player is impossible. All times UTC. Report format v{{.R.Version}}.
+</footer>
+</div>
+</body>
+</html>

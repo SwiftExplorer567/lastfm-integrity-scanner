@@ -451,6 +451,7 @@ func (s *Scanner) assemble(info *lastfm.UserInfo, top []lastfm.TopTrack, topErr 
 	// estimate of how much of the account is double or impossible.
 	all := scrobble.New(info.Name)
 	var covered [][2]int64
+	var samples []sampledWindow
 	var wSum, wRemoved float64
 	sampled := 0
 	for _, w := range windows {
@@ -459,7 +460,7 @@ func (s *Scanner) assemble(info *lastfm.UserInfo, top []lastfm.TopTrack, topErr 
 			h.Add(p.TS, scrobble.Track{Artist: p.Artist, Title: p.Title, Album: p.Album})
 		}
 		h.Sort()
-		wr := analysis.Analyze(analysis.Input{History: h, Scope: "quick", Durations: durationsFor(h), Params: params})
+		wr := analysis.Analyze(analysis.Input{History: h, Scope: "quick", Durations: durationsFor(h), Params: params, KeepClasses: true})
 		span := h.Last() - h.First()
 		w.stat = analysis.Window{
 			From: h.First(), To: h.Last(), Plays: len(h.Plays), SpanSec: span,
@@ -489,6 +490,7 @@ func (s *Scanner) assemble(info *lastfm.UserInfo, top []lastfm.TopTrack, topErr 
 			continue
 		}
 		covered = append(covered, [2]int64{lo, hi})
+		samples = append(samples, sampledWindow{h: h, classes: wr.Classes, s: summarize(h, wr.Classes)})
 		for _, p := range h.Plays {
 			all.Add(p.TS, h.Tracks[p.Track])
 		}
@@ -616,6 +618,8 @@ func (s *Scanner) assemble(info *lastfm.UserInfo, top []lastfm.TopTrack, topErr 
 		}
 		gate.Evidence = append(gate.Evidence, w.stat)
 	}
+
+	gate.Samples = detailSamples(samples, 6)
 
 	gate.Complete = periodsRead == len(units) && topErr == nil
 	switch {

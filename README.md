@@ -113,6 +113,7 @@ bin/lfscan recheck                         # re-score saved checks offline (data
 bin/lfscan scan HasanJWS -format json,html,pdf,png
 bin/lfscan scan user1 user2 -mode quick
 bin/lfscan render data/reports/hasanjws/latest.json -format pdf
+bin/lfscan ui                 # admin console on http://127.0.0.1:8090
 bin/lfscan serve              # HTTP API on :8080
 ```
 
@@ -130,6 +131,24 @@ Or with Docker: `docker build -t lfscan . && docker run -p 8080:8080 --env-file 
 | `LFSCAN_AUTO_FULL_MAX` | 300000 | auto mode does a full scan up to this many scrobbles |
 | `LFSCAN_DURATION_LOOKUPS` | 300 | `track.getInfo` calls per scan (0 disables) |
 | `LFSCAN_ADDR` | `:8080` | listen address |
+
+## Admin console (`lfscan ui`)
+
+```sh
+bin/lfscan ui            # then open http://127.0.0.1:8090
+bin/lfscan ui -demo      # the same console on a built-in fake Last.fm, no API key needed
+```
+
+A local page for the whole review loop, on the same `data/` folder the CLI uses (checks run with `lfscan check` show up too):
+
+- **Run checks**: paste usernames or profile links (one per line, or comma-separated). They run 2 at a time in patient mode, so a long batch waits for the rate budget instead of reading less. The list shows each check live: decision, score, seconds, and whether it came from the 6-hour cache.
+- **Results**: every account's latest check, sortable by decision, scrobbles, busiest period or share of impossible plays, filterable by decision and by your label.
+- **Evidence**: the selected account's report opens beside the list, with downloads (HTML, PNG, PDF, JSON) and a Last.fm link. The report shows why it was decided, the whole history from Last.fm's exact counts, every window the check read coloured by what each play was (one player, second player, duplicate, echo, impossible), and for the most suspicious windows the densest 15 minutes laid out on two players plus the plays themselves.
+- **Labels**: mark accounts **fake**, **honest** or **unsure** with a note (`f` / `h` / `u`, `n` for the note, `j` / `k` to move). Labels are saved in `data/labels.json`. The console counts how many of your fakes were blocked or passed and how many honest accounts were held back, and the **Disagrees** filter lists exactly those.
+- **Re-score all** runs every saved capture (`data/checks`) through the current rules without asking Last.fm, and lists what changed next to your labels.
+- **Export calibration zip**: captures, labels and a summary CSV, everything needed to tune the rules on your accounts.
+
+The console has no login: it listens on 127.0.0.1 only. Without `LASTFM_API_KEY` it still shows, labels, re-scores and exports saved checks.
 
 ## HTTP API
 
@@ -167,13 +186,14 @@ A scan already running for a user is returned instead of starting a second one. 
 ## Layout
 
 ```
-cmd/lfscan          CLI: scan, serve, render, demo
+cmd/lfscan          CLI: check, recheck, scan, ui, serve, render, demo
 internal/lastfm     API client: rate limit, retries, parallel pages, monthly totals, song lengths
 internal/scrobble   compact interned history + on-disk cache
 internal/scanner    one scan end to end (cache, incremental fetch, lengths, analysis, saving)
 internal/analysis   the detection logic and scoring
 internal/render     JSON / HTML / PDF / PNG / SVG
 internal/server     HTTP API with a job queue
+internal/ui         local admin console: checks, evidence, labels, re-score, export
 internal/synth      generated listeners for tests and the demo
 internal/mockfm     fake Last.fm API (incl. its JSON quirks and injected errors) for tests
 ```

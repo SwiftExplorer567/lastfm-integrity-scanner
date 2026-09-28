@@ -332,6 +332,9 @@ func (s *Scanner) durations(ctx context.Context, h *scrobble.History, budget int
 // SaveReport writes the report as the user's latest and into their history.
 func (s *Scanner) SaveReport(r *analysis.Report) error { return s.saveReportAs(r, "") }
 
+// SaveCheck saves a pre-import check report as the user's latest check.
+func (s *Scanner) SaveCheck(r *analysis.Report) error { return s.saveReportAs(r, "check") }
+
 // saveReportAs saves under a prefix: "" for scans, "check" for pre-import
 // checks, which keep their own latest.
 func (s *Scanner) saveReportAs(r *analysis.Report, kind string) error {

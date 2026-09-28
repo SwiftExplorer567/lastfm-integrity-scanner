@@ -85,6 +85,26 @@ type Input struct {
 	// Extra signals found outside the play history (for example from
 	// lifetime per-song totals). They count toward the score like any other.
 	Extra []Signal
+	// KeepClasses fills Report.Classes with what the analysis decided about
+	// each play, for evidence views.
+	KeepClasses bool
+}
+
+// Play classes, as the evidence views show them.
+const (
+	ClassNormal       = "normal"        // fits on the first player
+	ClassSecondPlayer = "second_player" // fits only with a second player running
+	ClassDuplicate    = "duplicate"     // a copy of a play seconds earlier
+	ClassEcho         = "echo"          // the same play under mismatched metadata
+	ClassExcess       = "excess"        // needed a third player at once
+)
+
+// PlayClass is the analysis's verdict on one play.
+type PlayClass struct {
+	Kind     string `json:"kind"`
+	Lane     int    `json:"lane"`     // player it was packed onto, -1 if none
+	Occupies int    `json:"occupies"` // seconds it was credited with
+	Rapid    bool   `json:"rapid,omitempty"`
 }
 
 // Analyze computes the full report. It runs in O(n log n) for n plays and
@@ -141,6 +161,12 @@ func Analyze(in Input) *Report {
 	)
 	state := make([]uint8, n)
 	rapid := make([]bool, n)
+	echo := make([]bool, n)
+	lanes := make([]int8, n)
+	for i := range lanes {
+		lanes[i] = -1
+	}
+	occs := make([]int32, n)
 	{
 		lastTS := make([]int64, nSongs)
 		lastCluster := make([]int32, nSongs)
@@ -201,6 +227,7 @@ func Analyze(in Input) *Report {
 		for k := 1; k < len(kept); k++ {
 			if tight(k-1, k) && !tight(k-2, k-1) && !tight(k, k+1) {
 				state[kept[k]] = stDuplicate
+				echo[kept[k]] = true
 				ig.Duplicates++
 				ig.EchoDuplicates++
 				k++ // the pair is consumed; the next play starts fresh
@@ -231,11 +258,13 @@ func Analyze(in Input) *Report {
 					break
 				}
 			}
+			occs[i] = int32(occ)
 			if lane < 0 {
 				state[i] = stExcess
 				ig.ExcessPlays++
 				continue
 			}
+			lanes[i] = int8(lane)
 			busy[lane] = t + occ
 			if lane > 0 {
 				ig.SecondDevicePlays++
@@ -549,6 +578,25 @@ func Analyze(in Input) *Report {
 		st.AvgPerDay = float64(st.LastfmScrobbles) / float64(st.AccountDays)
 	}
 
+	if in.KeepClasses {
+		r.Classes = make([]PlayClass, n)
+		for i := range plays {
+			c := PlayClass{Lane: int(lanes[i]), Occupies: int(occs[i]), Rapid: rapid[i]}
+			switch {
+			case state[i] == stDuplicate && echo[i]:
+				c.Kind = ClassEcho
+			case state[i] == stDuplicate:
+				c.Kind = ClassDuplicate
+			case state[i] == stExcess:
+				c.Kind = ClassExcess
+			case lanes[i] > 0:
+				c.Kind = ClassSecondPlayer
+			default:
+				c.Kind = ClassNormal
+			}
+			r.Classes[i] = c
+		}
+	}
 	score(r, in.Extra)
 	return r
 }

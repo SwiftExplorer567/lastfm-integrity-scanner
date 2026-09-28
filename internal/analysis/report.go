@@ -22,6 +22,9 @@ type Report struct {
 	// Gate is set by the pre-import check: the admission decision and the
 	// evidence gathered from Last.fm's aggregate endpoints.
 	Gate *Gate `json:"gate,omitempty"`
+
+	// Classes has one entry per analysed play when Input.KeepClasses is set.
+	Classes []PlayClass `json:"-"`
 }
 
 type Profile struct {
@@ -239,6 +242,41 @@ type Gate struct {
 	Hotspots []MonthStat `json:"hotspots"`
 	// Sampled windows of consecutive plays, densest first.
 	Evidence []Window `json:"evidence"`
+	// Samples describes every window read, in time order: what each play
+	// was classified as, and for the most suspicious windows the activity
+	// over the window and a play-by-play look at its densest stretch.
+	Samples []Sample `json:"samples,omitempty"`
+}
+
+// Sample is one window of consecutive plays as the analysis saw it.
+type Sample struct {
+	From    int64          `json:"from"`
+	To      int64          `json:"to"`
+	Plays   int            `json:"plays"`
+	PerHour float64        `json:"per_hour"`
+	Counts  map[string]int `json:"counts"` // by PlayClass.Kind
+	Rapid   int            `json:"rapid"`
+	// Suspicion orders windows: the share of plays that are impossible or
+	// rapid loops.
+	Suspicion float64 `json:"suspicion"`
+	// Activity: plays per BucketSec across the window (top windows only).
+	BucketSec int   `json:"bucket_sec,omitempty"`
+	Activity  []int `json:"activity,omitempty"`
+	// Zoom: every play of the window's densest stretch (top windows only).
+	ZoomFrom int64        `json:"zoom_from,omitempty"`
+	ZoomTo   int64        `json:"zoom_to,omitempty"`
+	Zoom     []SamplePlay `json:"zoom,omitempty"`
+}
+
+// SamplePlay is one play in a zoomed stretch.
+type SamplePlay struct {
+	TS       int64  `json:"ts"`
+	Artist   string `json:"artist"`
+	Title    string `json:"title"`
+	Kind     string `json:"kind"`
+	Lane     int    `json:"lane"`
+	Occupies int    `json:"occupies"`
+	Rapid    bool   `json:"rapid,omitempty"`
 }
 
 // TrackEvidence is one song's lifetime total and the least listening time
