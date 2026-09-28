@@ -91,6 +91,9 @@ type Integrity struct {
 	// EchoDuplicates are the part of Duplicates found as lone pairs of
 	// different songs seconds apart (two scrobblers, mismatched metadata).
 	EchoDuplicates int `json:"echo_duplicates"`
+	// StutterCopies are the part of Duplicates that repeat one play within
+	// Params.StutterSeconds, however many times (a stuttering scrobbler).
+	StutterCopies int `json:"stutter_copies"`
 
 	// Plays that fit only because a second player was running at the same
 	// time (a forgotten YouTube tab while Spotify plays on the phone). Benign.
@@ -115,6 +118,20 @@ type Integrity struct {
 
 	LoopPlays int     `json:"loop_plays"`
 	LoopShare float64 `json:"loop_share"`
+	// FastLoopPlays repeat a song heard minutes before, under 30 s after the
+	// previous play: a playlist cycled faster than anyone can listen.
+	FastLoopPlays int     `json:"fast_loop_plays"`
+	FastLoopShare float64 `json:"fast_loop_share"`
+
+	// SkipRunPlays are in runs of four or more different songs, each under
+	// Params.SkipSeconds after the previous. A whole album in album order is
+	// how manual "scrobble this album" tools and some old clients look;
+	// SkipRunMixed counts the steps between different artists and albums,
+	// which only scrobbling software produces.
+	SkipRuns     int     `json:"skip_runs"`
+	SkipRunPlays int     `json:"skip_run_plays"`
+	SkipRunShare float64 `json:"skip_run_share"`
+	SkipRunMixed int     `json:"skip_run_mixed"`
 
 	Bursts       int     `json:"bursts"`
 	BurstPlays   int     `json:"burst_plays"`

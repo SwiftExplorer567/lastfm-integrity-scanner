@@ -34,6 +34,15 @@ type Params struct {
 	// MaxCopies is the most copies of one play that can come from honest
 	// double scrobbling (one per scrobbler app). More is a loop.
 	MaxCopies int `json:"max_copies"`
+	// StutterSeconds: copies of one song this close to the previous copy are
+	// one play a scrobbler stuttered on, however many there are. Real
+	// accounts from 2009–2016 carry runs of 5–30 copies a second apart,
+	// followed by the next song minutes later: one listen, recorded N times.
+	// 0 disables.
+	StutterSeconds int `json:"stutter_seconds"`
+	// SkipSeconds: different songs this close after the previous play, four
+	// or more in a row, were not listened to (see Integrity.SkipRunPlays).
+	SkipSeconds int `json:"skip_seconds"`
 	// PairSeconds: two different songs this close, alone, are one play
 	// recorded twice with mismatched metadata. 0 disables.
 	PairSeconds int `json:"pair_seconds"`
@@ -56,6 +65,8 @@ func DefaultParams() Params {
 		MinPlaySeconds:    30,
 		DupWindowSeconds:  60,
 		MaxCopies:         3,
+		StutterSeconds:    2,
+		SkipSeconds:       15,
 		PairSeconds:       10,
 		LoopWindowSeconds: 600,
 		BurstWindowSecond: 60,
@@ -174,10 +185,16 @@ func Analyze(in Input) *Report {
 			lastCluster[i] = -1
 		}
 		cluster := make([]int32, n)
+		stutter := make([]bool, n)
 		var sizes []int32
 		for i := 0; i < n; i++ {
 			s := song(i)
-			if c := lastCluster[s]; c >= 0 && plays[i].TS-lastTS[s] <= int64(p.DupWindowSeconds) {
+			if c := lastCluster[s]; c >= 0 && plays[i].TS-lastTS[s] <= int64(p.StutterSeconds) {
+				// A stutter copy: a duplicate that does not make the
+				// cluster look like a loop.
+				cluster[i] = c
+				stutter[i] = true
+			} else if c >= 0 && plays[i].TS-lastTS[s] <= int64(p.DupWindowSeconds) {
 				cluster[i] = c
 				sizes[c]++
 			} else {
@@ -190,6 +207,12 @@ func Analyze(in Input) *Report {
 		seen := make([]int32, len(sizes))
 		for i := 0; i < n; i++ {
 			c := cluster[i]
+			if stutter[i] {
+				state[i] = stDuplicate
+				ig.Duplicates++
+				ig.StutterCopies++
+				continue
+			}
 			seen[c]++
 			if seen[c] == 1 {
 				continue
@@ -282,6 +305,22 @@ func Analyze(in Input) *Report {
 		gapHist := map[int64]int{}
 		prev := -1
 		kept := 0
+		// Skip runs: plays of different songs each under SkipSeconds after
+		// the previous, counted once a run reaches four.
+		var run []int
+		flushRun := func() {
+			if len(run) >= 4 {
+				ig.SkipRunPlays += len(run)
+				ig.SkipRuns++
+				for k := 1; k < len(run); k++ {
+					a, b := h.Tracks[plays[run[k-1]].Track], h.Tracks[plays[run[k]].Track]
+					if a.Artist != b.Artist && a.Album != b.Album {
+						ig.SkipRunMixed++
+					}
+				}
+			}
+			run = run[:0]
+		}
 		for i := 0; i < n; i++ {
 			if state[i] == stDuplicate {
 				continue
@@ -289,8 +328,21 @@ func Analyze(in Input) *Report {
 			kept++
 			s := song(i)
 			t := plays[i].TS
+			if p.SkipSeconds > 0 && prev >= 0 && t-plays[prev].TS < int64(p.SkipSeconds) && song(prev) != s {
+				if len(run) == 0 {
+					run = append(run, prev)
+				}
+				run = append(run, i)
+			} else {
+				flushRun()
+			}
 			if t-lastTS[s] <= int64(p.LoopWindowSeconds) {
 				ig.LoopPlays++
+				// A song heard minutes ago, seconds after the play before:
+				// a playlist cycled faster than it can be listened to.
+				if prev >= 0 && t-plays[prev].TS < 30 && t-lastTS[s] > int64(p.DupWindowSeconds) {
+					ig.FastLoopPlays++
+				}
 			}
 			lastTS[s] = t
 			if prev >= 0 {
@@ -305,6 +357,9 @@ func Analyze(in Input) *Report {
 			}
 			prev = i
 		}
+		flushRun()
+		ig.SkipRunShare = ratio(ig.SkipRunPlays, kept)
+		ig.FastLoopShare = ratio(ig.FastLoopPlays, kept)
 		ig.LoopShare = ratio(ig.LoopPlays, kept)
 		ig.UnderFifteenShare = ratio(ig.UnderFifteen, kept-1)
 		var mode int64
@@ -348,22 +403,32 @@ func Analyze(in Input) *Report {
 
 	// 5. Bursts: BurstMinPlays or more plays inside one BurstWindow, taken
 	// greedily so they do not overlap.
+	// Copies of one play are left out: a stuttering scrobbler is not a burst.
 	var bursts []Burst
-	for i := 0; i < n; {
-		j := i
-		for j+1 < n && plays[j+1].TS-plays[i].TS < int64(p.BurstWindowSecond) {
-			j++
-		}
-		if cnt := j - i + 1; cnt >= p.BurstMinPlays {
-			bursts = append(bursts, Burst{Start: plays[i].TS, End: plays[j].TS, Plays: cnt})
-			ig.BurstPlays += cnt
-			if cnt > ig.BurstMax {
-				ig.BurstMax = cnt
+	{
+		var kept []int
+		for i := 0; i < n; i++ {
+			if state[i] != stDuplicate {
+				kept = append(kept, i)
 			}
-			i = j + 1
-			continue
 		}
-		i++
+		m := len(kept)
+		for a := 0; a < m; {
+			b := a
+			for b+1 < m && plays[kept[b+1]].TS-plays[kept[a]].TS < int64(p.BurstWindowSecond) {
+				b++
+			}
+			if cnt := b - a + 1; cnt >= p.BurstMinPlays {
+				bursts = append(bursts, Burst{Start: plays[kept[a]].TS, End: plays[kept[b]].TS, Plays: cnt})
+				ig.BurstPlays += cnt
+				if cnt > ig.BurstMax {
+					ig.BurstMax = cnt
+				}
+				a = b + 1
+				continue
+			}
+			a++
+		}
 	}
 	ig.Bursts = len(bursts)
 	if n > 0 {
@@ -389,7 +454,9 @@ func Analyze(in Input) *Report {
 	}
 	r.Charts.Bursts = bursts
 
-	// 6. Calendar: days, clock hours, week × hour, time of day.
+	// 6. Calendar: days, clock hours, week × hour, time of day. Copies of a
+	// play are one listen, so they do not count toward the day and hour
+	// limits.
 	st := &r.Stats
 	var hourOfDay [24]int
 	{
@@ -424,6 +491,9 @@ func Analyze(in Input) *Report {
 			}
 		}
 		for i := 0; i < n; i++ {
+			if state[i] == stDuplicate {
+				continue
+			}
 			t := plays[i].TS
 			hk := floorDiv(t, 3600)
 			if hk != hourKey {

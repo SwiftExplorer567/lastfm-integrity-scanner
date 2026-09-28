@@ -639,15 +639,47 @@ func (s *Scanner) assemble(info *lastfm.UserInfo, top []lastfm.TopTrack, topErr 
 		gate.Decision = GateReview
 		gate.Reason = fmt.Sprintf("Nothing looks scripted, but %d periods averaged over %d plays a day (peak %s a day in %s): more than one person listens, or players ran for months.",
 			r.Stats.MonthsOverLimit, params.DayLimit, analysis.Num(int64(math.Round(r.Stats.PeakMonth.PerDay))), r.Stats.PeakMonth.Month)
-	case !gate.Complete:
+	case !gate.Complete && !missingFits(info.Playcount, units, topErr, params.DayLimit):
 		gate.Decision = GateReview
 		gate.Reason = fmt.Sprintf("Nothing suspicious in what was read, but only %d of %d periods answered in time.", periodsRead, len(units))
+	case !gate.Complete:
+		// The lifetime playcount minus the periods read is what the missing
+		// ones hold; if that is a volume one person reaches, a period or two
+		// that timed out is no reason to hold the account.
+		gate.Decision = GatePass
+		gate.Reason = fmt.Sprintf("Nothing suspicious in what was read. %d of %d periods did not answer in time, but the lifetime total leaves them a volume one person reaches.",
+			len(units)-periodsRead, len(units))
 	default:
 		gate.Decision = GatePass
 		gate.Reason = "Nothing in the lifetime totals or the sampled plays needs more than one person with up to two players."
 	}
 	r.Gate = gate
 	return r, nil
+}
+
+// missingFits reports whether the periods that did not answer can hold
+// only a human volume: the lifetime playcount minus the periods read, over
+// the missing days, stays under dayLimit. It allows at most two missing
+// periods, or a tenth of them, and needs the top tracks' evidence.
+func missingFits(playcount int64, units []*unit, topErr error, dayLimit int) bool {
+	if topErr != nil || playcount <= 0 {
+		return false
+	}
+	var read int64
+	missing, missingDays := 0, 0
+	for _, u := range units {
+		if u.ok {
+			read += u.total
+		} else {
+			missing++
+			missingDays += u.days
+		}
+	}
+	if missing > max(2, len(units)/10) {
+		return false
+	}
+	rest := max(playcount-read, 0)
+	return float64(rest) <= float64(dayLimit)*float64(max(missingDays, 1))
 }
 
 // topTrackSignals turns lifetime per-song totals into evidence. Every

@@ -58,6 +58,24 @@ The first 100-account run (92 answered; 4 hidden, 4 not found) gave 77 pass, 10 
 
 `lfscan check -file users.txt` reads usernames from a file. Every batch ends with counts per outcome and writes `checks-summary.csv` (one row per account: decision, score, signals, timings). Hidden and missing accounts are listed as `private` and `not found`, not as failures.
 
+### Calibrated on 32 labelled accounts
+
+The admin labelled 32 of the checked accounts in the console: 7 fake, 16 honest, 9 unsure. 28 came with saved Last.fm answers. The old rules already passed every honest account and held back every fake, but some of the reasons were wrong. The highest honest score was 22, only 13 points below the lowest fake. Reading the plays behind the scores showed three patterns:
+
+- **Stuttering scrobblers.** Honest accounts from 2009–2016 have runs of one song recorded 5–30 times a second apart, with the next song minutes later: one listen, recorded N times. The old rules scored these as rapid loops, bursts and impossible plays. Copies of a song at most 2 s after the previous copy are now duplicates however many there are (`stutter_copies`), and they don't count toward the day and hour limits or bursts. Honest accounts carry up to 8.6%. From 15% the account goes to review ("One play recorded many times"); a labelled fake had 19%.
+- **Different artists seconds apart.** In fakes, songs by different artists from different albums follow each other 1–5 s apart, in long runs. No player does that. It is 3.2–3.8% of plays in two fakes and at most 0.05% in the 16 honest accounts. It scores up to 35 (`mixed_skips`). One album in track order seconds apart is what a manual "scrobble this album" looks like. That is a weak signal (`album_skips`, at most 8).
+- **Playlists cycled faster than they play.** Another fake repeats the same dozen songs by one artist, each a few seconds after the one before, for minutes on end. A song heard minutes earlier coming back under 30 s after the previous play is 2.2–12% of plays in fakes and at most 0.4% in honest accounts (`fast_loops`, up to 35).
+
+Also, a check where a period or two timed out no longer goes to review when the lifetime playcount leaves the missing periods a human volume.
+
+| label | before | after |
+|---|---|---|
+| fake (7) | 4 block, 2 review | 4 block, 2 review (Hakubi 49, lessthanfamous 35) |
+| honest (16) | all pass, highest 22 | all pass, highest 6 |
+| unsure (9) | 2 review only because a period timed out | those 2 pass |
+
+The fake row counts ChAelitaNicole's earlier block: the export had no capture for it, so it was not re-scored.
+
 ### What the Last.fm API docs changed here
 
 Sources: [lastfm-docs/api-docs](https://github.com/lastfm-docs/api-docs) and the official [API terms](https://www.last.fm/api/tos).

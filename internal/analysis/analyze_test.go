@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -157,5 +158,127 @@ func TestSongKey(t *testing.T) {
 	}
 	if SongKey("BTS", "SWIM") == SongKey("BTS", "Body to Body") {
 		t.Error("different songs matched")
+	}
+}
+
+// analyzePlays builds a history of plays spaced by gaps, each (artist, title, album).
+type play struct {
+	gap                  int64
+	artist, title, album string
+}
+
+func analyzePlays(t *testing.T, ps []play) *Report {
+	t.Helper()
+	h := scrobble.New("u")
+	ts := now.AddDate(0, -1, 0).Unix()
+	for _, p := range ps {
+		ts += p.gap
+		h.Add(ts, scrobble.Track{Artist: p.artist, Title: p.title, Album: p.album})
+	}
+	h.Sort()
+	return Analyze(Input{Profile: Profile{Name: "u", Playcount: int64(len(ps))}, History: h, Scope: "quick", Params: DefaultParams(), Now: now})
+}
+
+func hasSignal(r *Report, id string) bool {
+	for _, s := range r.Signals {
+		if s.ID == id && s.Points > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// Scrobblers from 2009–2016 recorded one listen 5–30 times a second apart;
+// the next song follows minutes later. That is one play, not a loop.
+func TestStutterIsOnePlay(t *testing.T) {
+	// Honest accounts in the calibration set carry up to 8.6% such copies.
+	var ps []play
+	copies := 0
+	for i := 0; i < 1000; i++ {
+		ps = append(ps, play{180 + int64(i*37%120), "A", fmt.Sprint("song ", i), "X"})
+		if i%100 == 0 {
+			for k := 0; k < 3+i%12; k++ {
+				ps = append(ps, play{1, "A", fmt.Sprint("song ", i), "X"})
+				copies++
+			}
+		}
+	}
+	r := analyzePlays(t, ps)
+	ig := r.Integrity
+	if ig.RapidLoopPlays != 0 || ig.ExcessPlays != 0 || ig.Bursts != 0 {
+		t.Errorf("stutter scored as a loop: rapid %d, excess %d, bursts %d", ig.RapidLoopPlays, ig.ExcessPlays, ig.Bursts)
+	}
+	if ig.StutterCopies != copies || ig.Duplicates != copies {
+		t.Errorf("stutter copies %d, duplicates %d, want %d", ig.StutterCopies, ig.Duplicates, copies)
+	}
+	if r.Score.Value != 0 {
+		t.Errorf("score %d, want 0: %+v", r.Score.Value, r.Signals)
+	}
+	if want := float64(copies) / float64(len(ps)); r.Leaderboard.RemovedShare < want {
+		t.Errorf("copies must still come off the leaderboard count; removed %.3f, want %.3f", r.Leaderboard.RemovedShare, want)
+	}
+
+	// A fifth of the history recorded twice is worth a look.
+	for i := range ps {
+		if i%3 == 0 {
+			ps = append(ps, play{1, ps[len(ps)-1].artist, ps[len(ps)-1].title, "X"})
+		}
+	}
+	if r := analyzePlays(t, ps); !hasSignal(r, "stutter") {
+		t.Errorf("heavy stutter: no signal (%d copies of %d)", r.Integrity.StutterCopies, len(ps))
+	}
+}
+
+// Different artists seconds apart: only scrobbling software does that.
+func TestMixedSkipsAreFake(t *testing.T) {
+	var ps []play
+	for i := 0; i < 400; i++ {
+		gap := int64(200)
+		if i%10 != 0 {
+			gap = 3
+		}
+		ps = append(ps, play{gap, fmt.Sprint("artist ", i), "t", fmt.Sprint("album ", i)})
+	}
+	r := analyzePlays(t, ps)
+	if !hasSignal(r, "mixed_skips") {
+		t.Errorf("no mixed_skips signal: %+v", r.Signals)
+	}
+}
+
+// One album in order, seconds apart, is a manual album scrobble: a weak
+// signal, never on its own a reason to hold the account.
+func TestAlbumSkipsAreWeak(t *testing.T) {
+	// djryan (labelled unsure) has 5.4% of plays like this.
+	var ps []play
+	for i := 0; i < 1000; i++ {
+		ps = append(ps, play{180 + int64(i*37%120), fmt.Sprint("artist ", i%40), fmt.Sprint("song ", i), "x"})
+		if i%200 == 0 {
+			for k := 0; k < 10; k++ {
+				ps = append(ps, play{2, "Band", fmt.Sprint("album ", i, " track ", k), fmt.Sprint("album ", i)})
+			}
+		}
+	}
+	r := analyzePlays(t, ps)
+	if hasSignal(r, "mixed_skips") || r.Score.Verdict != "clean" {
+		t.Errorf("album scrobbles: score %d %s, signals %+v", r.Score.Value, r.Score.Verdict, r.Signals)
+	}
+	if !hasSignal(r, "album_skips") {
+		t.Errorf("no album_skips signal: %+v", r.Signals)
+	}
+}
+
+// A short playlist cycled every few seconds for minutes on end.
+func TestFastLoopsAreFake(t *testing.T) {
+	var ps []play
+	for i := 0; i < 600; i++ {
+		gap := int64(8)
+		if i%50 == 0 {
+			gap = 3600
+		}
+		ps = append(ps, play{gap, "Band", fmt.Sprint("song ", i%12), "album"})
+	}
+	r := analyzePlays(t, ps)
+	if !hasSignal(r, "fast_loops") || r.Score.Verdict == "clean" {
+		t.Errorf("fast loops: score %d %s, signals %+v", r.Score.Value, r.Score.Verdict, r.Signals)
 	}
 }

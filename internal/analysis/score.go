@@ -58,6 +58,41 @@ func score(r *Report, extra []Signal) {
 			fmt.Sprintf("%s of plays came less than fifteen seconds after the one before, after removing double scrobbles", pct(ig.UnderFifteenShare)),
 			capInt(round(50*ig.UnderFifteenShare), 15))
 	}
+	// Calibrated on 28 labelled real accounts. Runs of different songs from
+	// different artists seconds apart: two fakes 3.2% and 3.8% of plays,
+	// sixteen honest accounts at most 0.05%.
+	if mixed := ratio(ig.SkipRunMixed, n); mixed >= 0.003 && ig.SkipRunMixed >= 20 {
+		add("mixed_skips", "fake", "Songs from different artists seconds apart",
+			fmt.Sprintf("%s times a play came under %ds after a song by another artist from another album, in runs of four or more; no player scrobbles songs that fast",
+				num(ig.SkipRunMixed), p.SkipSeconds),
+			capInt(round(1000*mixed), 35))
+	}
+	// One album in order, seconds apart: a manual "scrobble this album" or an
+	// old client scrobbling skipped tracks. Honest accounts reach 1%.
+	if album := ratio(ig.SkipRunPlays-ig.SkipRunMixed, n); album >= 0.02 {
+		add("album_skips", "pattern", "Whole albums scrobbled in seconds",
+			fmt.Sprintf("%s of plays came in runs of four or more songs under %ds apart, mostly one album in order", pct(album), p.SkipSeconds),
+			capInt(round(150*(album-0.02)), 8))
+	}
+	// Two fakes 2.2% and 12%, honest accounts at most 0.4%.
+	if ig.FastLoopShare >= 0.005 && ig.FastLoopPlays >= 20 {
+		add("fast_loops", "fake", "A playlist cycled faster than it plays",
+			fmt.Sprintf("%s plays (%s) repeated a song heard minutes earlier, under 30 s after the play before",
+				num(ig.FastLoopPlays), pct(ig.FastLoopShare)),
+			capInt(round(1500*(ig.FastLoopShare-0.005)), 35))
+	}
+	// Stutter copies are removed and forgiven, but honest accounts stay
+	// under 9%; from 15% (a labelled fake had 19%) a person should look.
+	if stutter := ratio(ig.StutterCopies, n); stutter > 0.12 {
+		pts := capInt(round(800*(stutter-0.12)), 25)
+		if stutter >= 0.15 {
+			pts = 35
+		}
+		add("stutter", "volume", "One play recorded many times",
+			fmt.Sprintf("%s plays (%s) were copies of the play a second before; they are removed from the adjusted count, but honest accounts stay under 9%%",
+				num(ig.StutterCopies), pct(stutter)),
+			pts)
+	}
 	// Honest accounts reach about 1% here too (offline caches flushed in one
 	// batch: HasanJWS measured 0.96% and 1.0% on two runs), so points rise
 	// gradually from 1% instead of jumping in at a threshold.
@@ -138,8 +173,8 @@ func score(r *Report, extra []Signal) {
 	// What was forgiven.
 	if ig.Duplicates > 0 {
 		add("double_scrobbles", "benign", "Double scrobbles removed",
-			fmt.Sprintf("%s plays were a copy of a play seconds earlier (two scrobbler apps or devices); they are dropped from the adjusted count but do not raise the score",
-				num(ig.Duplicates)), 0)
+			fmt.Sprintf("%s plays were a copy of a play seconds earlier (two scrobbler apps or devices%s); they are dropped from the adjusted count but do not raise the score",
+				num(ig.Duplicates), stutterNote(ig.StutterCopies)), 0)
 	}
 	if ig.SecondDevicePlays > 0 {
 		add("second_device", "benign", "A second player at the same time",
@@ -197,6 +232,13 @@ func leaderboard(r *Report) {
 		lb.Action = "keep"
 		lb.Reason = "Clean; rank as is."
 	}
+}
+
+func stutterNote(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return ", or " + num(n) + " copies of one play a second apart from a stuttering scrobbler"
 }
 
 func round(f float64) int { return int(math.Round(f)) }
