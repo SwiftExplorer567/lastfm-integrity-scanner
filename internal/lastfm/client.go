@@ -241,6 +241,16 @@ func (c *Client) Tokens() float64 {
 	return t
 }
 
+// Burst is the most requests that can currently go out at once. It shrinks
+// after rate-limit answers (see aimd).
+func (c *Client) Burst() int {
+	b := c.limiter.Burst()
+	if c.extra != nil {
+		b = min(b, c.extra.Burst())
+	}
+	return b
+}
+
 // Throttled returns a client that shares this one's connection pool and
 // rate limit but is additionally held to rps. Bulk downloads use it so they
 // always leave headroom for the fast pre-import checks.

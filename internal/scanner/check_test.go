@@ -210,6 +210,40 @@ func TestCheckReportsRetries(t *testing.T) {
 	}
 }
 
+// TestPatientChecksReadFullSamples: a batch that drains the rate budget
+// waits instead of reading fewer periods, so every account gets the same
+// depth of reading.
+func TestPatientChecksReadFullSamples(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits for the rate budget")
+	}
+	users := map[string]struct {
+		p    synth.Profile
+		days int
+	}{}
+	names := []string{"a", "b", "c", "d"}
+	for _, n := range names {
+		users[n] = struct {
+			p    synth.Profile
+			days int
+		}{synth.Honest, 4 * 365}
+	}
+	s, _ := checkEnv(t, 0, users)
+	s.Opts.Check.Patient = true
+	first := 0
+	for _, n := range names {
+		r, err := s.Check(context.Background(), n, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first == 0 {
+			first = r.Gate.Periods
+		} else if r.Gate.Periods != first {
+			t.Errorf("%s: %d periods, want the same %d as the first check despite the drained budget", n, r.Gate.Periods, first)
+		}
+	}
+}
+
 // TestRecheckReproducesCheck: a saved capture re-scored offline gives the
 // same answer as the live check.
 func TestRecheckReproducesCheck(t *testing.T) {

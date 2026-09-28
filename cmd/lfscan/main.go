@@ -174,6 +174,7 @@ func cmdCheck(ctx context.Context, args []string) error {
 	formats := fs.String("format", "json,html,png", "comma-separated: json,html,pdf,png,svg")
 	out := fs.String("out", "reports", "directory for report files")
 	file := fs.String("file", "", "read usernames from this file, one per line or separated by spaces")
+	fast := fs.Bool("fast", false, "read fewer periods when the rate budget runs low, instead of waiting")
 	users, err := parseInterleaved(fs, args)
 	if err != nil {
 		return err
@@ -196,6 +197,9 @@ func cmdCheck(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// A batch wants every account read in full; wait for the rate budget
+	// instead of shrinking the sample (the server keeps the fast mode).
+	s.Opts.Check.Patient = !*fast
 	return runChecks(ctx, s, users, fmts, *out)
 }
 

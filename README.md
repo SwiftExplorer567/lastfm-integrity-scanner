@@ -51,6 +51,11 @@ The first 100-account run (92 answered; 4 hidden, 4 not found) gave 77 pass, 10 
 - **Rate limits are respected adaptively.** Every rate-limit answer (error 29) cuts the shared rate by 30% and halves the burst. Successes win the rate back, never above the configured value. `gate.retries` records each check's retries by reason (`rate_limited`, `http_500`, …).
 - **Every check saves its raw Last.fm answers** to `data/checks/<user>.json.gz` (latest per user; `LFSCAN_CHECK_CAPTURE=0` turns it off). `lfscan recheck` re-scores them with the current rules without asking Last.fm again. This is how new rules are tried on real accounts.
 
+**Second run** (same accounts): 82 pass, 9 review, 3 block, 0 unknown; slowest check 7.8 s (was 9.0 s). The echo-pair accounts dropped to about 0 points. roomx now has 32% of its plays removed as duplicates. The radio station and the 824-a-day account went to review. Five accounts whose faking comes in episodes changed decision between runs, e.g. renatoakamur (review 56 → pass 18). Most had been read with the smallest sample (8 periods, 12 requests), because 100 back-to-back checks drain the rate budget. Two changes followed:
+
+- **Uncertain accounts are read more.** When rounds 1–2 find some evidence (score 10+) but no verdict, round 3 reads a mid-period window in 8 more periods before deciding.
+- **Batches wait instead of sampling less.** `lfscan check` waits for the rate budget to refill before each account, so every account gets the full sample; `-fast` restores the shrinking behaviour. The HTTP server keeps the fast mode for live sign-ups.
+
 `lfscan check -file users.txt` reads usernames from a file. Every batch ends with counts per outcome and writes `checks-summary.csv` (one row per account: decision, score, signals, timings). Hidden and missing accounts are listed as `private` and `not found`, not as failures.
 
 ### What the Last.fm API docs changed here

@@ -66,6 +66,13 @@ type CheckOptions struct {
 	Concurrent int
 	// CacheTTL: a result this recent is returned without asking Last.fm.
 	CacheTTL time.Duration
+	// ExtraProbes: when rounds 1–2 found some evidence but no verdict, this
+	// many more periods get a window from their middle in round 3.
+	ExtraProbes int
+	// Patient makes a check wait for the shared request budget to refill
+	// instead of reading fewer periods (see check1). Batch runs want the
+	// full sample on every account; live sign-ups want an answer now.
+	Patient bool
 	// HedgeAfter: a request with no answer by then gets a twin, and the
 	// first answer wins. In the first 100-account run most requests took
 	// 1–3 s but a few hung for 7–8 s and pushed checks past the deadline.
@@ -84,6 +91,7 @@ func DefaultCheckOptions() CheckOptions {
 		Concurrent:  3,
 		CacheTTL:    6 * time.Hour,
 		HedgeAfter:  2500 * time.Millisecond,
+		ExtraProbes: 8,
 	}
 }
 
@@ -148,6 +156,18 @@ func (s *Scanner) Check(ctx context.Context, user string, force bool) (*analysis
 		return nil, ctx.Err()
 	}
 	defer func() { <-cs.sem }()
+	if o.Patient && s.Client != nil {
+		// Wait, before the deadline starts, until a full check's requests
+		// can go out at once.
+		// Never more than the bucket can hold: after rate-limit answers the
+		// burst shrinks, and waiting for more would never end.
+		want := min(float64(o.MaxRequests)*0.75, float64(s.Client.Burst())*0.9)
+		for s.Client.Tokens() < want {
+			if err := sleepCtx(ctx, 200*time.Millisecond); err != nil {
+				return nil, err
+			}
+		}
+	}
 	started := time.Now()
 
 	r, err := s.check1(ctx, user, o)
@@ -317,9 +337,14 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 	// the check still answers inside the deadline with what it has, and when
 	// rounds 1–2 already prove the account suspect: on the big fake accounts
 	// each request takes ~3 s and more evidence cannot change the decision.
-	decided := false
+	decided, uncertain := false, false
 	if pre, err := s.assemble(info, top, topErr, distinct, units, append([]*unit(nil), units...), windows, since, now, int(requests.Load()), o); err == nil {
 		decided = pre.Score.Verdict == "suspect" && pre.Gate.Complete
+		// Some evidence but no verdict yet. Faking that comes in episodes
+		// is caught or missed depending on which windows were read (the
+		// second 100-account run flipped renatoakamur from review 56 to
+		// pass 18 on a smaller sample), so read more before deciding.
+		uncertain = !decided && pre.Score.Value >= 10
 	}
 	jobs = nil
 	if !decided && time.Since(started) < o.Deadline*55/100 {
@@ -337,9 +362,13 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 				jobs = append(jobs, job{sub, 1})
 			}
 		}
+		maxMiddles := 2
+		if uncertain {
+			maxMiddles += o.ExtraProbes
+		}
 		middles := 0
 		for _, u := range hot {
-			if middles == 2 {
+			if middles == maxMiddles {
 				break
 			}
 			// The newest plays before the period's midpoint: a page-1 query
@@ -708,5 +737,16 @@ func hedged[T any](ctx context.Context, delay time.Duration, call func(context.C
 				timer.Reset(delay)
 			}
 		}
+	}
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
