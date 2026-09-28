@@ -57,7 +57,9 @@ type CheckOptions struct {
 	TopTracks int
 	// MaxRequests caps the requests one check may make.
 	MaxRequests int
-	// Workers is how many requests of one check run at once.
+	// Workers is how many requests of one check run at once. It should cover
+	// a whole round: a round takes as long as its slowest wave, so 22
+	// requests on 16 workers cost two round trips instead of one.
 	Workers int
 	// Concurrent checks run at once; more wait their turn, so the first in
 	// line finish fast instead of all of them finishing slowly.
@@ -74,7 +76,7 @@ func DefaultCheckOptions() CheckOptions {
 		Window:      500,
 		TopTracks:   200,
 		MaxRequests: 64,
-		Workers:     16,
+		Workers:     32,
 		Concurrent:  3,
 		CacheTTL:    6 * time.Hour,
 	}
@@ -111,6 +113,9 @@ type unit struct {
 	windows  int
 	refined  []*unit
 	isPeriod bool
+	// parent is set for a probe into the middle of a period: its window
+	// stands for the parent's plays.
+	parent *unit
 }
 
 // Check runs the pre-import check for user. force skips the cache.
@@ -240,8 +245,12 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 			u.total, u.ok = p.Total, true
 		}
 		if len(p.Scrobbles) > 0 {
-			u.windows++
-			windows = append(windows, &window{unit: u, plays: p.Scrobbles})
+			owner := u
+			if u.parent != nil {
+				owner = u.parent
+			}
+			owner.windows++
+			windows = append(windows, &window{unit: owner, plays: p.Scrobbles})
 		}
 	}
 	type job struct {
@@ -303,9 +312,12 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 			if middles == 2 {
 				break
 			}
+			// The newest plays before the period's midpoint: a page-1 query
+			// bounded by time, because deep pages (page 600 of a busy
+			// period) are slow on Last.fm.
 			if u.ok && u.total > int64(2*o.Window) {
-				pages := int((u.total + int64(o.Window) - 1) / int64(o.Window))
-				jobs = append(jobs, job{u, (pages + 1) / 2})
+				mid := u.from + (u.to-u.from)/2
+				jobs = append(jobs, job{&unit{label: u.label, from: u.from, to: mid, days: 1, parent: u}, 1})
 				middles++
 			}
 		}

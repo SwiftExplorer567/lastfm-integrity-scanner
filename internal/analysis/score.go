@@ -64,10 +64,17 @@ func score(r *Report, extra []Signal) {
 				pct(ig.SameSecondShare), num(ig.SameSecondInstants), num(ig.SameSecondTriples)),
 			capInt(4+round(400*ig.SameSecondShare), 12))
 	}
+	// Real listening puts under 2% of gaps between different songs on any one
+	// exact second (HasanJWS 0.9–1.0%, even ChAelitaNicole 1.7%); a script
+	// with a fixed interval puts most of them there.
 	if ig.RegularGapSample >= 200 && ig.RegularGapShare >= 0.15 {
+		pts := capInt(round(100*(ig.RegularGapShare-0.10)), 20)
+		if ig.RegularGapShare >= 0.4 && ig.RegularGapSample >= 500 {
+			pts = 35
+		}
 		add("fixed_interval", "fake", "Songs spaced by one fixed interval",
 			fmt.Sprintf("%s of gaps between different songs were exactly %ds; real song lengths vary", pct(ig.RegularGapShare), ig.RegularGapSeconds),
-			capInt(round(100*(ig.RegularGapShare-0.10)), 20))
+			pts)
 	}
 
 	// Volume no single person reaches.
