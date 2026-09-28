@@ -24,7 +24,7 @@ func setup(t *testing.T, failEvery int64, profiles map[string]synth.Profile, day
 	}
 	srv := httptest.NewServer(mock)
 	t.Cleanup(srv.Close)
-	client := lastfm.New(lastfm.Config{APIKey: "test", BaseURL: srv.URL, RPS: 2000, Burst: 50, MaxRetries: 8, RetryBase: time.Millisecond})
+	client := lastfm.New(lastfm.Config{APIKey: "test", BaseURL: srv.URL, RPS: 2000, Burst: 50, MaxRetries: 8, RetryBase: time.Millisecond, FixedRate: true})
 	opts := DefaultOptions()
 	opts.AutoFullMaxScrobbles = 50_000
 	opts.BulkRPS = 0 // the mock has no limit to respect

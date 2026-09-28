@@ -26,6 +26,10 @@ const (
 	// many plays appear twice a few seconds apart with slightly different
 	// metadata.
 	DoubleScrobbler Profile = "double-scrobbler"
+	// EchoScrobbler: honest, but a second scrobbler records most plays again
+	// 0–8 s later under metadata that shares nothing with the first (another
+	// script, another title format), and the listener skips a lot.
+	EchoScrobbler Profile = "echo-scrobbler"
 	// Faker: honest-looking history padded by a bot that loops a handful of
 	// songs seconds apart for hours every day.
 	Faker Profile = "faker"
@@ -35,7 +39,7 @@ const (
 	Scripted Profile = "scripted"
 )
 
-var Profiles = []Profile{Honest, TwoDevices, DoubleScrobbler, Scripted, Faker}
+var Profiles = []Profile{Honest, TwoDevices, DoubleScrobbler, EchoScrobbler, Scripted, Faker}
 
 // Song is a catalogue entry with its length.
 type Song struct {
@@ -124,6 +128,16 @@ func Generate(user string, o Options) *Result {
 			start := cursor
 			dur := int64(20*60 + rng.IntN(150*60))
 			rec := plain
+			skip := 0.15
+			if o.Profile == EchoScrobbler {
+				skip = 0.5
+				rec = func(ts int64, s Song) {
+					h.Add(ts, s.Track)
+					if rng.Float64() < 0.8 {
+						h.Add(ts+int64(rng.IntN(9)), scrobble.Track{Artist: "アーティスト " + s.Artist[7:], Title: "曲 " + s.Title[5:]})
+					}
+				}
+			}
 			if o.Profile == DoubleScrobbler && rng.Float64() < 0.7 {
 				rec = func(ts int64, s Song) {
 					h.Add(ts, s.Track)
@@ -133,7 +147,7 @@ func Generate(user string, o Options) *Result {
 					h.Add(ts+int64(rng.IntN(20)), alt)
 				}
 			}
-			cursor = session(start, dur, 0.15, rec) + int64(30*60+rng.IntN(150*60))
+			cursor = session(start, dur, skip, rec) + int64(30*60+rng.IntN(150*60))
 		}
 		switch o.Profile {
 		case TwoDevices:

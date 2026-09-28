@@ -14,6 +14,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -52,6 +53,8 @@ func main() {
 		err = cmdScan(ctx, os.Args[2:])
 	case "check":
 		err = cmdCheck(ctx, os.Args[2:])
+	case "recheck":
+		err = cmdRecheck(os.Args[2:])
 	case "serve":
 		err = cmdServe(ctx, os.Args[2:])
 	case "render":
@@ -75,7 +78,8 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `lfscan: Last.fm scrobble integrity scanner
 
-  lfscan check <user>... [-format json,html,png] [-out dir]   pre-import check, under 10 s per account
+  lfscan check <user>... [-file users.txt] [-format json,html,png] [-out dir]   pre-import check, seconds per account
+  lfscan recheck [capture files or dirs]   re-score saved checks (data/checks) offline
   lfscan scan <user>... [-mode auto|full|quick] [-format json,html,pdf,png,svg] [-out dir] [-refresh]
   lfscan serve [-addr :8080]
   lfscan render <report.json> [-format html,pdf,png,svg] [-out dir]
@@ -169,9 +173,17 @@ func cmdCheck(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("check", flag.ExitOnError)
 	formats := fs.String("format", "json,html,png", "comma-separated: json,html,pdf,png,svg")
 	out := fs.String("out", "reports", "directory for report files")
+	file := fs.String("file", "", "read usernames from this file, one per line or separated by spaces")
 	users, err := parseInterleaved(fs, args)
 	if err != nil {
 		return err
+	}
+	if *file != "" {
+		b, err := os.ReadFile(*file)
+		if err != nil {
+			return err
+		}
+		users = append(users, strings.Fields(string(b))...)
 	}
 	if len(users) == 0 {
 		return errors.New("check: give at least one Last.fm username")
@@ -188,30 +200,160 @@ func cmdCheck(ctx context.Context, args []string) error {
 }
 
 func runChecks(ctx context.Context, s *scanner.Scanner, users []string, fmts []render.Format, out string) error {
-	failed := 0
+	var results []checkResult
 	for _, u := range users {
 		rep, err := s.Check(ctx, u, true)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", u, err)
-			failed++
+		res := checkResult{user: u, report: rep}
+		switch {
+		case lastfm.IsPrivate(err):
+			res.status = "private"
+		case lastfm.IsNotFound(err):
+			res.status = "not found"
+		case err != nil:
+			res.status, res.err = "failed", err
+		default:
+			res.status = rep.Gate.Decision
+		}
+		results = append(results, res)
+		if rep == nil {
+			fmt.Printf("%-24s %s\n", u, strings.ToUpper(res.status))
+			if res.err != nil {
+				fmt.Fprintf(os.Stderr, "    %v\n", res.err)
+			}
 			continue
 		}
-		g := rep.Gate
-		fmt.Printf("%-24s %-7s score %3d  %s scrobbles  %.1fs  %d requests  %d/%d periods  %s plays sampled\n",
-			rep.User.Name, strings.ToUpper(g.Decision), rep.Score.Value, analysis.Num(rep.User.Playcount),
-			float64(g.ElapsedMS)/1000, g.Requests, g.PeriodsRead, g.Periods, analysis.Num(g.SampledPlay))
-		fmt.Printf("    %s\n", g.Reason)
-		for _, sg := range rep.Signals {
-			if sg.Points > 0 {
-				fmt.Printf("    %+4d  %s: %s\n", sg.Points, sg.Title, sg.Detail)
-			}
-		}
+		printCheck(rep)
 		if err := writeReports(rep, fmts, out); err != nil {
 			return err
 		}
 	}
-	if failed > 0 {
-		return fmt.Errorf("%d of %d checks failed", failed, len(users))
+	return summarize(results, out)
+}
+
+// cmdRecheck re-scores saved check captures (data/checks/*.json.gz) with the
+// current analysis, without asking Last.fm.
+func cmdRecheck(args []string) error {
+	fs := flag.NewFlagSet("recheck", flag.ExitOnError)
+	formats := fs.String("format", "json", "comma-separated: json,html,pdf,png,svg")
+	out := fs.String("out", "reports/recheck", "directory for report files")
+	paths, err := parseInterleaved(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		paths = []string{filepath.Join(envStr("LFSCAN_DATA_DIR", "data"), "checks")}
+	}
+	fmts, err := parseFormats(*formats)
+	if err != nil {
+		return err
+	}
+	var files []string
+	for _, p := range paths {
+		if st, err := os.Stat(p); err == nil && st.IsDir() {
+			m, _ := filepath.Glob(filepath.Join(p, "*.json.gz"))
+			files = append(files, m...)
+		} else {
+			files = append(files, p)
+		}
+	}
+	if len(files) == 0 {
+		return errors.New("recheck: no capture files found")
+	}
+	s, err := scanner.New(nil, filepath.Join(os.TempDir(), "lfscan-recheck"), scanner.DefaultOptions())
+	if err != nil {
+		return err
+	}
+	var results []checkResult
+	for _, f := range files {
+		cp, err := scanner.LoadCapture(f)
+		if err != nil {
+			results = append(results, checkResult{user: filepath.Base(f), status: "failed", err: err})
+			continue
+		}
+		rep, err := s.Recheck(cp)
+		if err != nil {
+			results = append(results, checkResult{user: cp.Info.Name, status: "failed", err: err})
+			continue
+		}
+		printCheck(rep)
+		results = append(results, checkResult{user: rep.User.Name, status: rep.Gate.Decision, report: rep})
+		if err := writeReports(rep, fmts, *out); err != nil {
+			return err
+		}
+	}
+	return summarize(results, *out)
+}
+
+type checkResult struct {
+	user   string
+	status string // pass | review | block | unknown | private | not found | failed
+	report *analysis.Report
+	err    error
+}
+
+func printCheck(rep *analysis.Report) {
+	g := rep.Gate
+	fmt.Printf("%-24s %-7s score %3d  %s scrobbles  %.1fs  %d requests  %d/%d periods  %s plays sampled\n",
+		rep.User.Name, strings.ToUpper(g.Decision), rep.Score.Value, analysis.Num(rep.User.Playcount),
+		float64(g.ElapsedMS)/1000, g.Requests, g.PeriodsRead, g.Periods, analysis.Num(g.SampledPlay))
+	fmt.Printf("    %s\n", g.Reason)
+	for _, sg := range rep.Signals {
+		if sg.Points > 0 {
+			fmt.Printf("    %+4d  %s: %s\n", sg.Points, sg.Title, sg.Detail)
+		}
+	}
+}
+
+// summarize prints counts per outcome and writes checks-summary.csv, one row
+// per account, for spreadsheets and moderators. Only real failures make the
+// command fail; hidden or missing accounts are outcomes.
+func summarize(results []checkResult, out string) error {
+	counts := map[string]int{}
+	for _, r := range results {
+		counts[r.status]++
+	}
+	fmt.Printf("\n%d accounts:", len(results))
+	for _, k := range []string{"pass", "review", "block", "unknown", "private", "not found", "failed"} {
+		if counts[k] > 0 {
+			fmt.Printf("  %s %d", k, counts[k])
+		}
+	}
+	fmt.Println()
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(out, "checks-summary.csv")
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	w := csv.NewWriter(f)
+	w.Write([]string{"user", "decision", "score", "scrobbles", "adjusted", "seconds", "requests", "periods_read", "periods", "reason", "signals"})
+	for _, r := range results {
+		row := []string{r.user, r.status}
+		if rep := r.report; rep != nil {
+			var sig []string
+			for _, s := range rep.Signals {
+				if s.Points > 0 {
+					sig = append(sig, fmt.Sprintf("%s +%d", s.ID, s.Points))
+				}
+			}
+			g := rep.Gate
+			row = append(row, strconv.Itoa(rep.Score.Value), strconv.FormatInt(rep.User.Playcount, 10),
+				strconv.FormatInt(rep.Leaderboard.AdjustedScrobbles, 10), fmt.Sprintf("%.1f", float64(g.ElapsedMS)/1000),
+				strconv.Itoa(g.Requests), strconv.Itoa(g.PeriodsRead), strconv.Itoa(g.Periods), g.Reason, strings.Join(sig, "; "))
+		} else if r.err != nil {
+			row = append(row, "", "", "", "", "", "", "", r.err.Error(), "")
+		}
+		w.Write(row)
+	}
+	w.Flush()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	fmt.Printf("wrote %s\n", path)
+	if counts["failed"] > 0 {
+		return fmt.Errorf("%d of %d checks failed", counts["failed"], len(results))
 	}
 	return nil
 }

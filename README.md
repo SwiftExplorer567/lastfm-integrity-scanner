@@ -40,6 +40,19 @@ Run `lfscan demo-check` to reproduce this without an API key.
 
 **Many sign-ups at once.** Last.fm allows 5 requests per second per IP, *averaged over 5 minutes*. The client runs at 4.5/s with a burst of 60, which stays under 1,500 requests in any 5-minute window. Checks run at most 3 at a time, and the rest queue. When the shared budget runs low, each check reads fewer periods (never fewer than 8), so the queue keeps moving. Full-history downloads are held to 3 requests/s, so they never starve checks. In a test with 8 sign-ups arriving together, the first 3 finished in under 1 s and the 8th in 13 s. Sustained, one IP handles roughly 15–25 checks a minute. A result is cached for 6 hours (`force` skips the cache).
 
+### Calibrated on 100 real accounts
+
+The first 100-account run (92 answered; 4 hidden, 4 not found) gave 77 pass, 10 review, 4 block and 1 unknown. It led to these changes:
+
+- **Echo pairs are double scrobbles.** Two different "songs" seconds apart with nothing else nearby is one play recorded twice by two scrobblers whose metadata doesn't match, for example a Japanese and a romanized artist name. One player can't scrobble twice that fast. Several honest accounts had 4–7% of their plays in such pairs, which inflated the "under 15 s", "same second" and "third player" signals. These pairs are now removed like other duplicates. A bot's rapid plays come in chains and are unaffected.
+- **Fixed interval** is 35 points (review) from 20% of gaps. Across 90 real accounts the median is 0.9% and the maximum 6%; a radio-station account had 25% of its gaps at exactly 180 s.
+- **Months of impossible volume go to review** even when nothing looks scripted. Two or more periods over 600 plays a day (one account hit 824 a day) need a human to decide.
+- **Slow requests are hedged.** A request with no answer after 2.5 s gets a copy, and after 5 s another; the first answer wins. The optional third round gets only 80% of the deadline. In the first run, a few requests hung for 7–8 s and caused 1 unknown and 2 reviews.
+- **Rate limits are respected adaptively.** Every rate-limit answer (error 29) cuts the shared rate by 30% and halves the burst. Successes win the rate back, never above the configured value. `gate.retries` records each check's retries by reason (`rate_limited`, `http_500`, …).
+- **Every check saves its raw Last.fm answers** to `data/checks/<user>.json.gz` (latest per user; `LFSCAN_CHECK_CAPTURE=0` turns it off). `lfscan recheck` re-scores them with the current rules without asking Last.fm again. This is how new rules are tried on real accounts.
+
+`lfscan check -file users.txt` reads usernames from a file. Every batch ends with counts per outcome and writes `checks-summary.csv` (one row per account: decision, score, signals, timings). Hidden and missing accounts are listed as `private` and `not found`, not as failures.
+
 ### What the Last.fm API docs changed here
 
 Sources: [lastfm-docs/api-docs](https://github.com/lastfm-docs/api-docs) and the official [API terms](https://www.last.fm/api/tos).
@@ -90,6 +103,8 @@ go build -o bin/lfscan ./cmd/lfscan
 bin/lfscan demo               # example reports from generated accounts, no API needed
 bin/lfscan demo-check         # pre-import checks against a built-in fake Last.fm, no API needed
 bin/lfscan check HasanJWS ChAelitaNicole   # pre-import check, a few seconds each
+bin/lfscan check -file leaderboard.txt     # a batch; writes reports/checks-summary.csv
+bin/lfscan recheck                         # re-score saved checks offline (data/checks)
 bin/lfscan scan HasanJWS -format json,html,pdf,png
 bin/lfscan scan user1 user2 -mode quick
 bin/lfscan render data/reports/hasanjws/latest.json -format pdf

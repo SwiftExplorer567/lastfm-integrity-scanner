@@ -85,6 +85,9 @@ type Integrity struct {
 	// account) within DupWindow. Benign; removed from the adjusted count.
 	Duplicates        int `json:"duplicates"`
 	DuplicateClusters int `json:"duplicate_clusters"`
+	// EchoDuplicates are the part of Duplicates found as lone pairs of
+	// different songs seconds apart (two scrobblers, mismatched metadata).
+	EchoDuplicates int `json:"echo_duplicates"`
 
 	// Plays that fit only because a second player was running at the same
 	// time (a forgotten YouTube tab while Spotify plays on the phone). Benign.
@@ -220,6 +223,9 @@ type Gate struct {
 	// DecidedEarly: rounds 1–2 already proved the account suspect, so the
 	// refining round was skipped.
 	DecidedEarly bool `json:"decided_early,omitempty"`
+	// Retries counts requests Last.fm answered with an error and that were
+	// asked again, by reason (rate_limited, http_500, lastfm_error_8, …).
+	Retries map[string]int `json:"retries,omitempty"`
 
 	// Lifetime per-song totals (user.getTopTracks, period=overall).
 	DistinctTracks  int64           `json:"distinct_tracks"`

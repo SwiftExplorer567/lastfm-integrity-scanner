@@ -66,6 +66,10 @@ type CheckOptions struct {
 	Concurrent int
 	// CacheTTL: a result this recent is returned without asking Last.fm.
 	CacheTTL time.Duration
+	// HedgeAfter: a request with no answer by then gets a twin, and the
+	// first answer wins. In the first 100-account run most requests took
+	// 1–3 s but a few hung for 7–8 s and pushed checks past the deadline.
+	HedgeAfter time.Duration
 }
 
 func DefaultCheckOptions() CheckOptions {
@@ -79,6 +83,7 @@ func DefaultCheckOptions() CheckOptions {
 		Workers:     32,
 		Concurrent:  3,
 		CacheTTL:    6 * time.Hour,
+		HedgeAfter:  2500 * time.Millisecond,
 	}
 }
 
@@ -163,6 +168,7 @@ func (s *Scanner) Check(ctx context.Context, user string, force bool) (*analysis
 func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*analysis.Report, error) {
 	ctx, cancel := context.WithTimeout(parent, o.Deadline)
 	defer cancel()
+	ctx, retries := lastfm.WithRetryStats(ctx)
 	c := s.Client
 	var requests atomic.Int32
 	// Wall time of each round, reported so slow Last.fm answers are visible.
@@ -197,8 +203,24 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 		wg       sync.WaitGroup
 	)
 	wg.Add(2)
-	go func() { defer wg.Done(); info, infoErr = c.UserInfo(ctx, user) }()
-	go func() { defer wg.Done(); top, distinct, topErr = c.TopTracks(ctx, user, "overall", o.TopTracks) }()
+	type topResult struct {
+		tracks   []lastfm.TopTrack
+		distinct int64
+	}
+	more := func() { requests.Add(1) }
+	go func() {
+		defer wg.Done()
+		info, infoErr = hedged(ctx, o.HedgeAfter, func(ctx context.Context) (*lastfm.UserInfo, error) { return c.UserInfo(ctx, user) }, more)
+	}()
+	go func() {
+		defer wg.Done()
+		var tr topResult
+		tr, topErr = hedged(ctx, o.HedgeAfter, func(ctx context.Context) (topResult, error) {
+			t, d, err := c.TopTracks(ctx, user, "overall", o.TopTracks)
+			return topResult{t, d}, err
+		}, more)
+		top, distinct = tr.tracks, tr.distinct
+	}()
 	wg.Wait()
 	requests.Add(2)
 	lap()
@@ -227,12 +249,14 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 		private  bool
 		budgetOK = func() bool { return int(requests.Load()) < o.MaxRequests }
 	)
-	read := func(u *unit, page int) {
+	read := func(ctx context.Context, u *unit, page int) {
 		if !budgetOK() {
 			return
 		}
 		requests.Add(1)
-		p, err := c.RecentTracks(ctx, user, page, o.Window, u.from, u.to)
+		p, err := hedged(ctx, o.HedgeAfter, func(ctx context.Context) (*lastfm.RecentPage, error) {
+			return c.RecentTracks(ctx, user, page, o.Window, u.from, u.to)
+		}, func() { requests.Add(1) })
 		mu.Lock()
 		defer mu.Unlock()
 		if err != nil {
@@ -257,7 +281,7 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 		u    *unit
 		page int
 	}
-	round := func(jobs []job) {
+	round := func(ctx context.Context, jobs []job) {
 		ch := make(chan job)
 		var wg sync.WaitGroup
 		for w := 0; w < min(o.Workers, len(jobs)); w++ {
@@ -265,7 +289,7 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 			go func() {
 				defer wg.Done()
 				for j := range ch {
-					read(j.u, j.page)
+					read(ctx, j.u, j.page)
 				}
 			}()
 		}
@@ -281,7 +305,7 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 	for _, u := range units {
 		jobs = append(jobs, job{u, 1})
 	}
-	round(jobs)
+	round(ctx, jobs)
 	lap()
 	if private {
 		return nil, fmt.Errorf("user %q: %w", user, &lastfm.APIError{Code: lastfm.ErrLoginRequired, Message: "recent listening is hidden"})
@@ -328,7 +352,11 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 			}
 		}
 	}
-	round(jobs)
+	// Round 3 is optional: it gets until 80% of the deadline, and whatever
+	// has not answered by then is left out rather than holding the decision.
+	ctx3, cancel3 := context.WithDeadline(ctx, started.Add(o.Deadline*80/100))
+	round(ctx3, jobs)
+	cancel3()
 	lap()
 
 	var leaves []*unit
@@ -340,12 +368,10 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 		}
 	}
 
-	r, err := s.assemble(info, top, topErr, distinct, units, leaves, windows, since, now, int(requests.Load()), o)
-	if r != nil {
-		r.Gate.RoundsMS = roundsMS
-		r.Gate.DecidedEarly = decided
-	}
-	return r, err
+	cp := newCapture(info, top, topErr, distinct, units, windows, since, now, int(requests.Load()), roundsMS, decided)
+	cp.Retries = retries.Counts()
+	s.saveCapture(cp)
+	return s.recheck(cp, o)
 }
 
 type window struct {
@@ -573,6 +599,13 @@ func (s *Scanner) assemble(info *lastfm.UserInfo, top []lastfm.TopTrack, topErr 
 	case r.Score.Verdict == "review":
 		gate.Decision = GateReview
 		gate.Reason = "Some signals point to faked plays: " + topReasons(r.Signals)
+	case r.Stats.MonthsOverLimit >= 2:
+		// Nothing scripted, but a volume one person on one or two players
+		// does not reach for months on end (xEspiix in the first 100-account
+		// run: 9 periods over 600 a day, peak 824). A person decides.
+		gate.Decision = GateReview
+		gate.Reason = fmt.Sprintf("Nothing looks scripted, but %d periods averaged over %d plays a day (peak %s a day in %s): more than one person listens, or players ran for months.",
+			r.Stats.MonthsOverLimit, params.DayLimit, analysis.Num(int64(math.Round(r.Stats.PeakMonth.PerDay))), r.Stats.PeakMonth.Month)
 	case !gate.Complete:
 		gate.Decision = GateReview
 		gate.Reason = fmt.Sprintf("Nothing suspicious in what was read, but only %d of %d periods answered in time.", periodsRead, len(units))
@@ -635,4 +668,45 @@ func topReasons(sig []analysis.Signal) string {
 		k++
 	}
 	return s + "."
+}
+
+// hedged runs call and, each time delay passes with no answer, another copy
+// of it (at most three in flight); the first success wins and the others are
+// cancelled. extra is called when a copy is sent. A failure before the delay is returned as is: the
+// client has already retried it.
+func hedged[T any](ctx context.Context, delay time.Duration, call func(context.Context) (T, error), extra func()) (T, error) {
+	if delay <= 0 {
+		return call(ctx)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		v   T
+		err error
+	}
+	ch := make(chan result, 2)
+	run := func() {
+		v, err := call(ctx)
+		ch <- result{v, err}
+	}
+	go run()
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	launched, pending := 1, 1
+	for {
+		select {
+		case r := <-ch:
+			pending--
+			if r.err == nil || pending == 0 {
+				return r.v, r.err
+			}
+		case <-timer.C:
+			if launched < 3 {
+				launched, pending = launched+1, pending+1
+				extra()
+				go run()
+				timer.Reset(delay)
+			}
+		}
+	}
 }

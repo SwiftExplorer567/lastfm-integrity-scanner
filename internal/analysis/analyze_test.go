@@ -82,6 +82,19 @@ func TestDoubleScrobblesAreRemovedNotPunished(t *testing.T) {
 	}
 }
 
+func TestMismatchedEchoesAreRemovedNotPunished(t *testing.T) {
+	r := run(t, synth.EchoScrobbler, false)
+	if r.Score.Verdict != "clean" {
+		t.Errorf("got %s (score %d), want clean", r.Score.Verdict, r.Score.Value)
+	}
+	if r.Integrity.EchoDuplicates < r.Integrity.PlaysAnalyzed/4 {
+		t.Errorf("echo duplicates %d of %d, want most second copies caught", r.Integrity.EchoDuplicates, r.Integrity.PlaysAnalyzed)
+	}
+	if r.Integrity.ExcessShare > 0.005 || r.Integrity.UnderFifteenShare > 0.02 {
+		t.Errorf("excess %.3f, under-15 %.3f; echoes should not count as either", r.Integrity.ExcessShare, r.Integrity.UnderFifteenShare)
+	}
+}
+
 func TestFakerIsSuspect(t *testing.T) {
 	r := run(t, synth.Faker, false)
 	if r.Score.Verdict != "suspect" || r.Leaderboard.Action != "exclude" {

@@ -132,6 +132,7 @@ footer{color:var(--muted);font-size:11.5px;margin-top:20px;border-top:1px solid 
     <p style="margin:6px 0 10px">{{.Reason}}</p>
     <dl class="kv">
       <dt>Time</dt><dd>{{printf "%.1f" (msec .ElapsedMS)}} s, {{.Requests}} requests</dd>
+      {{with .Retries}}<dt>Last.fm errors retried</dt><dd>{{range $k, $v := .}}{{$k}} {{$v}} {{end}}</dd>{{end}}
       <dt>History periods read</dt><dd>{{.PeriodsRead}} / {{.Periods}}{{if not .Complete}} (partial){{end}}</dd>
       <dt>Plays sampled</dt><dd>{{num .SampledPlay}} in {{.Windows}} windows</dd>
       <dt>Distinct songs</dt><dd>{{num .DistinctTracks}}{{if .PlaysPerTrack}} ({{num .PlaysPerTrack}} plays each){{end}}</dd>

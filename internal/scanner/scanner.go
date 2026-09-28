@@ -80,7 +80,7 @@ func New(client *lastfm.Client, dataDir string, opts Options) (*Scanner, error) 
 		return nil, err
 	}
 	s := &Scanner{Client: client, Store: scrobble.Store{Dir: dataDir}, Durations: dc, Opts: opts, bulk: client}
-	if opts.BulkRPS > 0 {
+	if opts.BulkRPS > 0 && client != nil {
 		s.bulk = client.Throttled(opts.BulkRPS)
 	}
 	return s, nil

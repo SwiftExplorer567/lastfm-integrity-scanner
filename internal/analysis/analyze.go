@@ -34,6 +34,9 @@ type Params struct {
 	// MaxCopies is the most copies of one play that can come from honest
 	// double scrobbling (one per scrobbler app). More is a loop.
 	MaxCopies int `json:"max_copies"`
+	// PairSeconds: two different songs this close, alone, are one play
+	// recorded twice with mismatched metadata. 0 disables.
+	PairSeconds int `json:"pair_seconds"`
 	// LoopWindowSeconds: a song counts as repeated if it was played this
 	// recently.
 	LoopWindowSeconds int `json:"loop_window_seconds"`
@@ -53,6 +56,7 @@ func DefaultParams() Params {
 		MinPlaySeconds:    30,
 		DupWindowSeconds:  60,
 		MaxCopies:         3,
+		PairSeconds:       10,
 		LoopWindowSeconds: 600,
 		BurstWindowSecond: 60,
 		BurstMinPlays:     5,
@@ -177,6 +181,33 @@ func Analyze(in Input) *Report {
 		}
 	}
 
+	// 1b. Echo pairs: two plays within PairSeconds of each other with nothing
+	// else that close on either side. One player cannot scrobble two songs
+	// that close (Last.fm needs at least ~15 s of listening), so this is one
+	// play recorded twice by two scrobblers whose metadata differs too much
+	// to match ("アーティスト" vs "Artist", a different title format). Real runs
+	// showed honest accounts with thousands of these. A bot's rapid plays come
+	// in chains of three or more and are left alone.
+	if p.PairSeconds > 0 {
+		var kept []int
+		for i := 0; i < n; i++ {
+			if state[i] == stKept {
+				kept = append(kept, i)
+			}
+		}
+		tight := func(a, b int) bool {
+			return a >= 0 && b < len(kept) && plays[kept[b]].TS-plays[kept[a]].TS <= int64(p.PairSeconds)
+		}
+		for k := 1; k < len(kept); k++ {
+			if tight(k-1, k) && !tight(k-2, k-1) && !tight(k, k+1) {
+				state[kept[k]] = stDuplicate
+				ig.Duplicates++
+				ig.EchoDuplicates++
+				k++ // the pair is consumed; the next play starts fresh
+			}
+		}
+	}
+
 	// 2. Pack the remaining plays onto Devices players. A play occupies its
 	// player for half its duration (capped at 4 minutes, Last.fm's own rule)
 	// or MinPlaySeconds when the duration is unknown. Plays with no free
@@ -258,7 +289,8 @@ func Analyze(in Input) *Report {
 		ig.RegularGapShare = ratio(best, ig.RegularGapSample)
 	}
 
-	// 4. Different songs at the same second.
+	// 4. Different songs at the same second, among plays that are not
+	// duplicates of another.
 	for i := 0; i < n; {
 		j := i
 		for j < n && plays[j].TS == plays[i].TS {
@@ -266,12 +298,16 @@ func Analyze(in Input) *Report {
 		}
 		if j-i > 1 {
 			distinct := map[uint32]struct{}{}
+			count := 0
 			for k := i; k < j; k++ {
-				distinct[song(k)] = struct{}{}
+				if state[k] != stDuplicate {
+					distinct[song(k)] = struct{}{}
+					count++
+				}
 			}
 			if len(distinct) > 1 {
 				ig.SameSecondInstants++
-				ig.SameSecondPlays += j - i
+				ig.SameSecondPlays += count
 				if len(distinct) > 2 {
 					ig.SameSecondTriples++
 				}

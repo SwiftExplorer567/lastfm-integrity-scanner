@@ -27,7 +27,7 @@ func checkEnv(t *testing.T, latency time.Duration, users map[string]struct {
 	}
 	srv := httptest.NewServer(mock)
 	t.Cleanup(srv.Close)
-	client := lastfm.New(lastfm.Config{APIKey: "k", BaseURL: srv.URL, RetryBase: 50 * time.Millisecond}) // default 4.5/s, burst 60
+	client := lastfm.New(lastfm.Config{APIKey: "k", BaseURL: srv.URL, RetryBase: 50 * time.Millisecond, FixedRate: true}) // default 4.5/s, burst 60
 	s, err := New(client, t.TempDir(), DefaultOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -170,6 +170,68 @@ func TestCheckBurstOfSignups(t *testing.T) {
 		}
 		if r.decision != want {
 			t.Errorf("%s: %s, want %s", r.name, r.decision, want)
+		}
+	}
+}
+
+// TestCheckSurvivesHungRequests: one request in 12, at random, hangs for 8 s,
+// as a few did in the first real 100-account run. Hedged copies must keep
+// the check complete and inside the deadline.
+func TestCheckSurvivesHungRequests(t *testing.T) {
+	s, mock := checkEnv(t, 50*time.Millisecond, map[string]struct {
+		p    synth.Profile
+		days int
+	}{"slowpoke": {synth.Honest, 6 * 365}})
+	mock.SlowEvery, mock.SlowFor = 12, 8*time.Second
+	start := time.Now()
+	r, err := s.Check(context.Background(), "slowpoke", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if el := time.Since(start); el > 8*time.Second || !r.Gate.Complete || r.Gate.Decision != GatePass {
+		t.Fatalf("took %v, complete=%v, decision=%s, rounds %v, requests %d; want a complete pass well under the deadline", el, r.Gate.Complete, r.Gate.Decision, r.Gate.RoundsMS, r.Gate.Requests)
+	}
+}
+
+// TestCheckReportsRetries: Last.fm errors that were retried show up in the
+// gate by reason, so slow checks can be explained.
+func TestCheckReportsRetries(t *testing.T) {
+	s, mock := checkEnv(t, 0, map[string]struct {
+		p    synth.Profile
+		days int
+	}{"alice": {synth.Honest, 400}})
+	mock.FailEvery = 5 // alternates HTTP 500 and error 29
+	r, err := s.Check(context.Background(), "alice", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Gate.Retries["rate_limited"] == 0 || r.Gate.Retries["http_500"] == 0 || r.Gate.Decision != GatePass {
+		t.Errorf("retries %v, decision %s; want both reasons counted and a pass", r.Gate.Retries, r.Gate.Decision)
+	}
+}
+
+// TestRecheckReproducesCheck: a saved capture re-scored offline gives the
+// same answer as the live check.
+func TestRecheckReproducesCheck(t *testing.T) {
+	s, _ := checkEnv(t, 0, map[string]struct {
+		p    synth.Profile
+		days int
+	}{"bot": {synth.Faker, 200}, "fine": {synth.TwoDevices, 400}})
+	for _, u := range []string{"bot", "fine"} {
+		live, err := s.Check(context.Background(), u, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cp, err := LoadCapture(s.capturePath(u))
+		if err != nil {
+			t.Fatal(err)
+		}
+		again, err := s.Recheck(cp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again.Score != live.Score || again.Gate.Decision != live.Gate.Decision || again.Integrity.PlaysAnalyzed != live.Integrity.PlaysAnalyzed {
+			t.Errorf("%s: recheck %+v %s, live %+v %s", u, again.Score, again.Gate.Decision, live.Score, live.Gate.Decision)
 		}
 	}
 }

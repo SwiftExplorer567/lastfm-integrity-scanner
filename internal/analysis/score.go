@@ -71,8 +71,10 @@ func score(r *Report, extra []Signal) {
 	// exact second (HasanJWS 0.9–1.0%, even ChAelitaNicole 1.7%); a script
 	// with a fixed interval puts most of them there.
 	if ig.RegularGapSample >= 200 && ig.RegularGapShare >= 0.15 {
+		// 90 real accounts: median 0.9%, p90 1.5%, max 6%; a radio station
+		// account 25%, a 31-second script 67%.
 		pts := capInt(round(100*(ig.RegularGapShare-0.10)), 20)
-		if ig.RegularGapShare >= 0.4 && ig.RegularGapSample >= 500 {
+		if ig.RegularGapShare >= 0.2 && ig.RegularGapSample >= 500 {
 			pts = 35
 		}
 		add("fixed_interval", "fake", "Songs spaced by one fixed interval",

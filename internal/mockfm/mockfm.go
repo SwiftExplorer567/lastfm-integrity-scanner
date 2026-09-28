@@ -8,6 +8,7 @@ package mockfm
 import (
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"strconv"
@@ -35,8 +36,12 @@ type Server struct {
 	// name, like the real API's "random results" bug. 0 disables it.
 	WrongUserEvery int64
 	// Latency is added to every response, to measure wall-clock time.
-	Latency  time.Duration
-	Requests atomic.Int64
+	Latency time.Duration
+	// SlowEvery makes one response in N, at random, take SlowFor instead,
+	// like the real API's occasional hung request.
+	SlowEvery int64
+	SlowFor   time.Duration
+	Requests  atomic.Int64
 }
 
 func New() *Server { return &Server{users: map[string]*User{}} }
@@ -49,7 +54,13 @@ func (s *Server) AddUser(u *User) {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	n := s.Requests.Add(1)
-	if s.Latency > 0 {
+	if s.SlowEvery > 0 && rand.Int64N(s.SlowEvery) == 0 {
+		select {
+		case <-time.After(s.SlowFor):
+		case <-r.Context().Done():
+			return
+		}
+	} else if s.Latency > 0 {
 		time.Sleep(s.Latency)
 	}
 	w.Header().Set("Content-Type", "application/json")

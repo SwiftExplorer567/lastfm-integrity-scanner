@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -32,6 +33,9 @@ type Config struct {
 	Burst      int
 	Timeout    time.Duration
 	MaxRetries int
+	// FixedRate turns off adapting the rate to rate-limit answers (tests
+	// that inject such answers on purpose).
+	FixedRate bool
 	// RetryBase is the first backoff delay; it doubles per attempt and is
 	// four times longer after a rate-limit error.
 	RetryBase time.Duration
@@ -43,6 +47,94 @@ type Client struct {
 	http    *http.Client
 	limiter *rate.Limiter
 	extra   *rate.Limiter // optional tighter limit, see Throttled
+	aimd    *aimd
+}
+
+// aimd adapts the shared rate to what Last.fm actually tolerates: every
+// rate-limit answer cuts the rate by 30% (never below 1/s) and shrinks the
+// burst; each 50 successes after that win back 10%, up to the configured
+// rate. The configured values are an upper bound, never exceeded.
+type aimd struct {
+	mu        sync.Mutex
+	successes int
+}
+
+func (c *Client) slowDown() {
+	c.aimd.mu.Lock()
+	defer c.aimd.mu.Unlock()
+	c.aimd.successes = 0
+	c.limiter.SetLimit(max(1, c.limiter.Limit()*0.7))
+	c.limiter.SetBurst(max(5, c.limiter.Burst()/2))
+}
+
+func (c *Client) speedUp() {
+	lim := c.limiter.Limit()
+	if float64(lim) >= c.cfg.RPS && c.limiter.Burst() >= c.cfg.Burst {
+		return
+	}
+	c.aimd.mu.Lock()
+	defer c.aimd.mu.Unlock()
+	c.aimd.successes++
+	if c.aimd.successes < 50 {
+		return
+	}
+	c.aimd.successes = 0
+	c.limiter.SetLimit(rate.Limit(min(c.cfg.RPS, float64(lim)*1.1)))
+	c.limiter.SetBurst(min(c.cfg.Burst, c.limiter.Burst()+5))
+}
+
+// RetryStats counts, per reason, the retries made by calls whose context
+// carries it (see WithRetryStats).
+type RetryStats struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+type retryKey struct{}
+
+// WithRetryStats returns a context whose calls record their retries in the
+// returned stats.
+func WithRetryStats(ctx context.Context) (context.Context, *RetryStats) {
+	st := &RetryStats{counts: map[string]int{}}
+	return context.WithValue(ctx, retryKey{}, st), st
+}
+
+func (s *RetryStats) add(reason string) {
+	s.mu.Lock()
+	s.counts[reason]++
+	s.mu.Unlock()
+}
+
+// Counts returns a copy of the retry counts, or nil if there were none.
+func (s *RetryStats) Counts() map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.counts) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(s.counts))
+	for k, v := range s.counts {
+		out[k] = v
+	}
+	return out
+}
+
+func retryReason(err error) string {
+	var ae *APIError
+	var he *httpError
+	switch {
+	case errors.As(err, &ae) && ae.Code == ErrRateLimited:
+		return "rate_limited"
+	case errors.As(err, &ae):
+		return fmt.Sprintf("lastfm_error_%d", ae.Code)
+	case errors.As(err, &he) && he.status == http.StatusTooManyRequests:
+		return "rate_limited"
+	case errors.As(err, &he):
+		return fmt.Sprintf("http_%d", he.status)
+	case err != nil && strings.Contains(err.Error(), "decode"):
+		return "bad_response"
+	}
+	return "network"
 }
 
 func New(cfg Config) *Client {
@@ -78,6 +170,7 @@ func New(cfg Config) *Client {
 			},
 		},
 		limiter: rate.NewLimiter(rate.Limit(cfg.RPS), cfg.Burst),
+		aimd:    &aimd{},
 	}
 }
 
@@ -181,6 +274,13 @@ func (c *Client) call(ctx context.Context, method string, params url.Values, out
 	var last error
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
+			reason := retryReason(last)
+			if st, ok := ctx.Value(retryKey{}).(*RetryStats); ok {
+				st.add(reason)
+			}
+			if reason == "rate_limited" && !c.cfg.FixedRate {
+				c.slowDown()
+			}
 			if err := sleep(ctx, backoff(c.cfg.RetryBase, attempt, last)); err != nil {
 				return err
 			}
@@ -224,6 +324,7 @@ func (c *Client) call(ctx context.Context, method string, params url.Values, out
 			last = fmt.Errorf("last.fm: decode %s: %w", method, err)
 			continue
 		}
+		c.speedUp()
 		return nil
 	}
 	return fmt.Errorf("last.fm: %s failed after %d attempts: %w", method, c.cfg.MaxRetries+1, last)
