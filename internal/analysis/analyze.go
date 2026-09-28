@@ -78,6 +78,9 @@ type Input struct {
 	Measurement Measurement
 	Params      Params
 	Now         time.Time
+	// Extra signals found outside the play history (for example from
+	// lifetime per-song totals). They count toward the score like any other.
+	Extra []Signal
 }
 
 // Analyze computes the full report. It runs in O(n log n) for n plays and
@@ -475,14 +478,17 @@ func Analyze(in Input) *Report {
 	}
 	for i := range months {
 		m := &months[i]
-		days := daysInMonth(m.Month, now)
+		days := m.Days
+		if days <= 0 {
+			days = daysInMonth(m.Month, now)
+		}
 		if days > 0 {
 			m.PerDay = float64(m.Plays) / float64(days)
 		}
 		if m.PerDay > float64(p.DayLimit) {
 			st.MonthsOverLimit++
 		}
-		if m.Plays > st.PeakMonth.Plays {
+		if m.PerDay > st.PeakMonth.PerDay {
 			st.PeakMonth = *m
 		}
 	}
@@ -507,7 +513,7 @@ func Analyze(in Input) *Report {
 		st.AvgPerDay = float64(st.LastfmScrobbles) / float64(st.AccountDays)
 	}
 
-	score(r)
+	score(r, in.Extra)
 	return r
 }
 

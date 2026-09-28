@@ -61,18 +61,18 @@ func MonthChartSVG(r *analysis.Report) string {
 	plotW, plotH := W-left-right, H-top-bottom
 	y := func(v float64) float64 { return top + plotH - v/maxV*plotH }
 	fmt.Fprintf(&b, `<text x="%.1f" y="%.1f" font-size="11" fill="%s" text-anchor="end">%s</text>`, W-2, top+4, colMuted, analysis.Num(int(maxV)))
-	bw := plotW / float64(len(ms))
-	gap := math.Min(2, bw*0.2)
+	bars := barLayout(ms, plotW, 34)
 	for i, m := range ms {
-		x := left + float64(i)*bw
+		x, bw := left+bars[i].x, bars[i].w
+		gap := math.Min(2, bw*0.2)
 		h := m.PerDay / maxV * plotH
 		if m.Plays > 0 && h < 1.5 {
 			h = 1.5
 		}
 		fmt.Fprintf(&b, `<rect x="%.2f" y="%.2f" width="%.2f" height="%.2f" rx="1" fill="%s"><title>%s: %s plays, %s a day</title></rect>`,
-			x+gap/2, top+plotH-h, math.Max(bw-gap, 0.8), h, dayColor(m.PerDay), m.Month, analysis.Num(m.Plays), analysis.Num(int(math.Round(m.PerDay))))
-		if strings.HasSuffix(m.Month, "-01") || i == 0 {
-			fmt.Fprintf(&b, `<text x="%.1f" y="%.1f" font-size="11" fill="%s">%s</text>`, x, H-8, colMuted, m.Month[:4])
+			x+gap/2, top+plotH-h, math.Max(bw-gap, 0.8), h, dayColor(m.PerDay), periodLabel(m), analysis.Num(m.Plays), analysis.Num(int(math.Round(m.PerDay))))
+		if bars[i].label != "" {
+			fmt.Fprintf(&b, `<text x="%.1f" y="%.1f" font-size="11" fill="%s">%s</text>`, x, H-8, colMuted, bars[i].label)
 		}
 	}
 	fmt.Fprintf(&b, `<line x1="%.1f" x2="%.1f" y1="%.1f" y2="%.1f" stroke="%s"/>`, left, left+plotW, top+plotH, top+plotH, colGrid)
@@ -212,4 +212,49 @@ func niceCeil(v float64) float64 {
 		}
 	}
 	return 10 * p
+}
+
+// bar is one entry of the history chart laid out along the time axis.
+type bar struct {
+	x, w  float64 // left edge and width, in the caller's units
+	label string  // year label to draw under this bar, or ""
+}
+
+// barLayout gives each entry a width proportional to the days it covers, so
+// a chart that mixes long periods and single months keeps a true time axis.
+// Year labels go under the first entry of each year, if there is room.
+func barLayout(ms []analysis.MonthStat, width, minLabelGap float64) []bar {
+	days := make([]float64, len(ms))
+	var total float64
+	for i, m := range ms {
+		d := float64(m.Days)
+		if d <= 0 {
+			d = 30.4
+		}
+		days[i] = d
+		total += d
+	}
+	out := make([]bar, len(ms))
+	x, lastLabel, lastYear := 0.0, math.Inf(-1), ""
+	for i, m := range ms {
+		w := days[i] / total * width
+		out[i] = bar{x: x, w: w}
+		if y := m.Month[:4]; y != lastYear {
+			if x-lastLabel >= minLabelGap {
+				out[i].label = y
+				lastLabel = x
+			}
+			lastYear = y
+		}
+		x += w
+	}
+	return out
+}
+
+// periodLabel names a chart entry: "2024-05", or "2023-01, 214 days".
+func periodLabel(m analysis.MonthStat) string {
+	if m.Days > 31 {
+		return fmt.Sprintf("%s, %d days", m.Month, m.Days)
+	}
+	return m.Month
 }

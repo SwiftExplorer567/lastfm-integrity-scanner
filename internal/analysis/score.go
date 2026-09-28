@@ -20,10 +20,13 @@ const (
 // or nothing; things only software produces (plays that need a third player,
 // the same song ten times a minute, one fixed interval between songs) carry
 // the most. Volume that no single person can reach sits in between.
-func score(r *Report) {
+func score(r *Report, extra []Signal) {
 	ig, st, p := &r.Integrity, &r.Stats, r.Params
 	n := ig.PlaysAnalyzed
-	var sig []Signal
+	// A quick check reads scattered windows of plays, not whole days, so
+	// signals that need complete days or a full clock are left out.
+	windowed := r.Measurement.Scope == "quick"
+	sig := append([]Signal(nil), extra...)
 	add := func(id, kind, title, detail string, pts int) {
 		if pts > 0 || kind == "benign" {
 			sig = append(sig, Signal{ID: id, Kind: kind, Title: title, Detail: detail, Points: pts})
@@ -83,9 +86,16 @@ func score(r *Report) {
 			capInt(6+round(60*share), 30))
 	}
 	if st.MonthsOverLimit > 0 {
+		unit := "months"
+		for _, m := range r.Charts.Months {
+			if m.Days > 31 {
+				unit = "periods"
+				break
+			}
+		}
 		add("months_over_limit", "volume", "Months no one could listen to",
-			fmt.Sprintf("%d of %d months averaged over %d plays a day; %s averaged %s",
-				st.MonthsOverLimit, st.MonthsTotal, p.DayLimit, st.PeakMonth.Month, num(int(st.PeakMonth.PerDay))),
+			fmt.Sprintf("%d of %d %s averaged over %d plays a day; %s averaged %s",
+				st.MonthsOverLimit, st.MonthsTotal, unit, p.DayLimit, st.PeakMonth.Month, num(int(st.PeakMonth.PerDay))),
 			capInt(10+5*(st.MonthsOverLimit-1), 25))
 	}
 	if st.HoursOverLimit >= 3 {
@@ -100,13 +110,13 @@ func score(r *Report) {
 			fmt.Sprintf("%s of plays repeated a song heard in the %d minutes before", pct(ig.LoopShare), p.LoopWindowSeconds/60),
 			capInt(6+round(40*(ig.LoopShare-0.4)), 18))
 	}
-	if st.NoSleepDays >= 3 {
+	if st.NoSleepDays >= 3 && !windowed {
 		share := ratio(st.NoSleepDays, st.DaysWithPlays)
 		add("no_sleep_days", "pattern", "Days with no time to sleep",
 			fmt.Sprintf("%s days with plays in %d or more different hours (%s of active days)", num(st.NoSleepDays), p.NoSleepHours, pct(share)),
 			capInt(3+round(100*share), 15))
 	}
-	if ig.QuietShare >= 0.15 && n >= 2000 {
+	if ig.QuietShare >= 0.15 && n >= 2000 && !windowed {
 		add("round_the_clock", "pattern", "No quiet hours",
 			fmt.Sprintf("The quietest six hours of the day (from %02d:00 UTC) still hold %s of plays; people who sleep leave a few percent there",
 				ig.QuietStartHour, pct(ig.QuietShare)),

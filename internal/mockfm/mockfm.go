@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/scrobble"
 )
@@ -30,7 +31,12 @@ type Server struct {
 	// FailEvery makes every Nth request fail, alternating between a rate
 	// limit error and an HTTP 500. 0 disables it.
 	FailEvery int64
-	Requests  atomic.Int64
+	// WrongUserEvery makes every Nth per-user answer carry another user's
+	// name, like the real API's "random results" bug. 0 disables it.
+	WrongUserEvery int64
+	// Latency is added to every response, to measure wall-clock time.
+	Latency  time.Duration
+	Requests atomic.Int64
 }
 
 func New() *Server { return &Server{users: map[string]*User{}} }
@@ -43,6 +49,9 @@ func (s *Server) AddUser(u *User) {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	n := s.Requests.Add(1)
+	if s.Latency > 0 {
+		time.Sleep(s.Latency)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if s.FailEvery > 0 && n%s.FailEvery == 0 {
 		if (n/s.FailEvery)%2 == 0 {
@@ -61,6 +70,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	u := s.users[strings.ToLower(q.Get("user"))]
 	s.mu.RUnlock()
+	name := ""
+	if u != nil {
+		name = u.History.User
+		if s.WrongUserEvery > 0 && n%s.WrongUserEvery == 0 {
+			name = "someone-else"
+		}
+	}
 	switch strings.ToLower(q.Get("method")) {
 	case "user.getinfo":
 		if u == nil {
@@ -81,7 +97,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 6, "User not found")
 			return
 		}
-		s.recent(w, q, u)
+		s.recent(w, q, u, name)
+	case "user.gettoptracks":
+		if u == nil {
+			writeErr(w, 6, "User not found")
+			return
+		}
+		s.top(w, q, u, name)
 	case "track.getinfo":
 		s.mu.RLock()
 		var d int
@@ -98,7 +120,51 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) recent(w http.ResponseWriter, q map[string][]string, u *User) {
+// top serves lifetime top tracks (period is ignored: always overall).
+func (s *Server) top(w http.ResponseWriter, q map[string][]string, u *User, name string) {
+	limit := 50
+	if v := q["limit"]; len(v) > 0 {
+		if l, err := strconv.Atoi(v[0]); err == nil && l > 0 {
+			limit = min(l, 1000)
+		}
+	}
+	counts := map[uint32]int{}
+	for _, p := range u.History.Plays {
+		counts[p.Track]++
+	}
+	ids := make([]uint32, 0, len(counts))
+	for id := range counts {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(a, b int) bool {
+		if counts[ids[a]] != counts[ids[b]] {
+			return counts[ids[a]] > counts[ids[b]]
+		}
+		return ids[a] < ids[b]
+	})
+	total := len(ids)
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	tracks := []map[string]any{}
+	for i, id := range ids {
+		t := u.History.Tracks[id]
+		tracks = append(tracks, map[string]any{
+			"@attr":     map[string]string{"rank": strconv.Itoa(i + 1)},
+			"name":      t.Title,
+			"duration":  strconv.Itoa(u.Durations[t]),
+			"playcount": strconv.Itoa(counts[id]),
+			"artist":    map[string]string{"name": t.Artist, "mbid": ""},
+		})
+	}
+	json.NewEncoder(w).Encode(map[string]any{"toptracks": map[string]any{
+		"track": tracks,
+		"@attr": map[string]string{"user": name, "page": "1", "perPage": strconv.Itoa(limit),
+			"totalPages": strconv.Itoa((total + limit - 1) / limit), "total": strconv.Itoa(total)},
+	}})
+}
+
+func (s *Server) recent(w http.ResponseWriter, q map[string][]string, u *User, name string) {
 	get := func(k string) string {
 		if v := q[k]; len(v) > 0 {
 			return v[0]
@@ -110,8 +176,11 @@ func (s *Server) recent(w http.ResponseWriter, q map[string][]string, u *User) {
 		page = 1
 	}
 	limit, _ := strconv.Atoi(get("limit"))
-	if limit < 1 || limit > 200 {
+	if limit < 1 {
 		limit = 50
+	}
+	if limit > 1000 {
+		limit = 1000
 	}
 	from, _ := strconv.ParseInt(get("from"), 10, 64)
 	to, _ := strconv.ParseInt(get("to"), 10, 64)
@@ -153,7 +222,7 @@ func (s *Server) recent(w http.ResponseWriter, q map[string][]string, u *User) {
 	json.NewEncoder(w).Encode(map[string]any{"recenttracks": map[string]any{
 		"track": trackField,
 		"@attr": map[string]string{
-			"user": u.History.User, "page": strconv.Itoa(page), "perPage": strconv.Itoa(limit),
+			"user": name, "page": strconv.Itoa(page), "perPage": strconv.Itoa(limit),
 			"totalPages": strconv.Itoa(pages), "total": strconv.Itoa(total),
 		},
 	}})

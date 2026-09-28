@@ -16,6 +16,9 @@ header h1{margin:0;font-size:22px}
 header .sub{color:var(--muted);font-size:12.5px}
 .badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11.5px;font-weight:600;vertical-align:middle;margin-left:6px}
 .b-clean{background:#14532d;color:#86efac}.b-review{background:#78350f;color:#fcd34d}.b-suspect{background:#7f1d1d;color:#fecaca}
+.b-pass{background:#14532d;color:#86efac}.b-block{background:#7f1d1d;color:#fecaca}.b-unknown{background:#374151;color:#e5e7eb}
+.gate{border-width:2px}.gate.d-pass{border-color:#166534}.gate.d-review{border-color:#92400e}.gate.d-block{border-color:#991b1b}
+.gate .dec{font:700 20px var(--mono);letter-spacing:1px}.gate.d-pass .dec{color:var(--green)}.gate.d-review .dec{color:var(--amber)}.gate.d-block .dec{color:var(--red)}
 .b-keep{background:#14532d;color:#86efac}.b-adjust{background:#1e3a5f;color:#93c5fd}.b-exclude{background:#7f1d1d;color:#fecaca}
 .grid{display:grid;grid-template-columns:320px 1fr;gap:16px;align-items:start}
 @media(max-width:860px){.grid{grid-template-columns:1fr}}
@@ -72,7 +75,7 @@ footer{color:var(--muted);font-size:11.5px;margin-top:20px;border-top:1px solid 
 <header>
   {{if .R.User.Image}}<img src="{{.R.User.Image}}" alt="">{{end}}
   <div>
-    <h1>{{.R.User.Name}} <span class="badge b-{{.R.Score.Verdict}}">{{.R.Score.Label}}</span> <span class="badge b-{{.R.Leaderboard.Action}}">leaderboard: {{.R.Leaderboard.Action}}</span></h1>
+    <h1>{{.R.User.Name}} <span class="badge b-{{.R.Score.Verdict}}">{{.R.Score.Label}}</span> {{with .R.Gate}}<span class="badge b-{{.Decision}}">import: {{.Decision}}</span> {{end}}<span class="badge b-{{.R.Leaderboard.Action}}">leaderboard: {{.R.Leaderboard.Action}}</span></h1>
     <div class="sub">{{num .R.User.Playcount}} scrobbles{{if .R.User.Registered}} · joined {{date .R.User.Registered}}{{end}}{{if .R.User.Country}} · {{.R.User.Country}}{{end}} · report generated {{.R.GeneratedAt.Format "2006-01-02 15:04 UTC"}}</div>
   </div>
 </header>
@@ -102,7 +105,7 @@ footer{color:var(--muted);font-size:11.5px;margin-top:20px;border-top:1px solid 
       <dt>Scope</dt><dd>{{.R.Measurement.Scope}}</dd>
       <dt>Range</dt><dd>{{date .R.Measurement.From}} → {{date .R.Measurement.To}}</dd>
       <dt>Plays analyzed</dt><dd>{{num .R.Measurement.PlaysAnalyzed}}</dd>
-      <dt>History map</dt><dd>{{.R.Measurement.HistoryMonths}} months</dd>
+      <dt>History map</dt><dd>{{.R.Measurement.HistoryMonths}} {{if .R.Gate}}periods{{else}}months{{end}}</dd>
       <dt>Pages read</dt><dd>{{num .R.Measurement.Pages}}</dd>
       <dt>From cache</dt><dd>{{num .R.Measurement.FromCache}}</dd>
       <dt>Song lengths known</dt><dd>{{num .R.Integrity.DurationsKnown}} plays</dd>
@@ -122,6 +125,21 @@ footer{color:var(--muted);font-size:11.5px;margin-top:20px;border-top:1px solid 
 </aside>
 
 <main>
+  {{with .R.Gate}}
+  <div class="card gate d-{{.Decision}}">
+    <h2>Pre-import check</h2>
+    <div class="dec">{{upper .Decision}}</div>
+    <p style="margin:6px 0 10px">{{.Reason}}</p>
+    <dl class="kv">
+      <dt>Time</dt><dd>{{printf "%.1f" (msec .ElapsedMS)}} s, {{.Requests}} requests</dd>
+      <dt>History periods read</dt><dd>{{.PeriodsRead}} / {{.Periods}}{{if not .Complete}} (partial){{end}}</dd>
+      <dt>Plays sampled</dt><dd>{{num .SampledPlay}} in {{.Windows}} windows</dd>
+      <dt>Distinct songs</dt><dd>{{num .DistinctTracks}}{{if .PlaysPerTrack}} ({{num .PlaysPerTrack}} plays each){{end}}</dd>
+      <dt>Top song's share of all plays</dt><dd>{{pct .TopTrackShare}}</dd>
+      <dt>Least hours the top songs need</dt><dd>{{num .TopTracksMinHrs}} of {{num .AccountHours}} since sign-up</dd>
+    </dl>
+  </div>
+  {{end}}
   <div class="card">
     <h2>Signals</h2>
     <p class="lead">Why the score is what it is: every point comes from one of these.</p>
@@ -129,6 +147,29 @@ footer{color:var(--muted);font-size:11.5px;margin-top:20px;border-top:1px solid 
     <div class="sig k-{{.Kind}}"><span class="p">{{if .Points}}+{{.Points}}{{else}}ok{{end}}</span><div><div class="t">{{.Title}}</div><div class="d">{{.Detail}}</div></div></div>
     {{else}}<p class="note">Nothing unusual.</p>{{end}}
   </div>
+
+  {{with .R.Gate}}
+  <div class="two">
+    <div class="card">
+      <h2>Lifetime top songs</h2>
+      <p class="lead">Last.fm's own totals. Every scrobble needs some listening (half the song, or {{$.R.Params.MinPlaySeconds}}s if its length is unknown), so these totals set a floor under the hours spent.</p>
+      <table><tr><th>Song</th><th class="r">Plays</th><th class="r">A day</th><th class="r">Least hours</th></tr>
+      {{range .TopTracks}}<tr><td>{{.Artist}} — {{.Title}}</td><td class="r">{{num .Plays}}</td><td class="r {{if gt .PerDay 50.0}}hot{{end}}">{{printf "%.1f" .PerDay}}</td><td class="r">{{num .MinHours}}</td></tr>{{end}}
+      </table>
+    </div>
+    <div class="card">
+      <h2>Densest stretches</h2>
+      <p class="lead">Exact play counts from Last.fm for the busiest periods and months.</p>
+      <table><tr><th>From</th><th class="r">Days</th><th class="r">Plays</th><th class="r">A day</th></tr>
+      {{range .Hotspots}}<tr><td>{{.Month}}</td><td class="r">{{.Days}}</td><td class="r">{{num .Plays}}</td><td class="r {{if gt .PerDay 600.0}}hot{{end}}">{{num .PerDay}}</td></tr>{{end}}
+      </table>
+      <h2 style="margin-top:16px">Densest sampled windows</h2>
+      <table><tr><th>Start (UTC)</th><th class="r">Plays</th><th class="r">Span</th><th class="r">A hour</th><th class="r">3rd player</th></tr>
+      {{range .Evidence}}<tr><td>{{datetime .From}}</td><td class="r">{{num .Plays}}</td><td class="r">{{dur .SpanSec}}</td><td class="r {{if gt .PerHour 60.0}}hot{{end}}">{{num .PerHour}}</td><td class="r {{if .Excess}}hot{{end}}">{{num .Excess}}</td></tr>{{end}}
+      </table>
+    </div>
+  </div>
+  {{end}}
 
   <div class="tiles">
     <div class="tile"><div class="h">Scrobbles on Last.fm</div><div class="v">{{num .R.Stats.LastfmScrobbles}}</div><div class="f">since {{date .R.User.Registered}}</div></div>
@@ -147,14 +188,14 @@ footer{color:var(--muted);font-size:11.5px;margin-top:20px;border-top:1px solid 
 
   <div class="card">
     <h2>The whole history, month by month</h2>
-    <p class="lead">Plays a day in each month{{if eq .R.Measurement.Scope "sample"}}, from Last.fm's own monthly totals{{end}}. A bar above the dashed lines is a month no one person could have listened to.</p>
+    <p class="lead">Plays a day in each {{if .R.Gate}}period (months where it got busy){{else}}month{{end}}{{if ne .R.Measurement.Scope "full"}}, from Last.fm's own totals{{end}}. A bar above the dashed lines is a month no one person could have listened to.</p>
     {{.MonthSVG}}
     <div class="legend">Plays a day: {{range .Scale}}<span><i style="background:{{.Color}}"></i>{{.Label}}</span>{{end}}</div>
   </div>
 
   <div class="card">
     <h2>Every day, one square each</h2>
-    <p class="lead">{{if eq .R.Measurement.Scope "sample"}}A sample: {{date .R.Measurement.From}} to {{date .R.Measurement.To}}.{{else}}The whole history.{{end}} Hover a square for its plays, hours and busiest hour. Outlined: plays in {{.R.Params.NoSleepHours}}+ different hours. All days UTC.</p>
+    <p class="lead">{{if .R.Gate}}Only the days the sampled windows touched.{{else if eq .R.Measurement.Scope "sample"}}A sample: {{date .R.Measurement.From}} to {{date .R.Measurement.To}}.{{else}}The whole history.{{end}} Hover a square for its plays, hours and busiest hour. Outlined: plays in {{.R.Params.NoSleepHours}}+ different hours. All days UTC.</p>
     {{range .Years}}<div class="year"><div class="yh">{{.Year}} <span>{{num .Plays}} plays</span></div>{{.SVG}}</div>{{end}}
     <div class="legend">Plays a day: {{range .Scale}}<span><i style="background:{{.Color}}"></i>{{.Label}}</span>{{end}}</div>
   </div>

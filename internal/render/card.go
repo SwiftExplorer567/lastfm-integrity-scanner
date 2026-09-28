@@ -65,6 +65,12 @@ var actionStyle = map[string][2]string{
 	"review":  {"#78350f", "#fcd34d"},
 	"exclude": {"#7f1d1d", "#fecaca"},
 }
+var gateStyle = map[string][2]string{
+	"pass":    {"#14532d", "#86efac"},
+	"review":  {"#78350f", "#fcd34d"},
+	"block":   {"#7f1d1d", "#fecaca"},
+	"unknown": {"#374151", "#e5e7eb"},
+}
 var kindStyle = map[string][2]string{
 	"fake":    {"#3b1219", "#f87171"},
 	"volume":  {"#3b2a0f", "#f59e0b"},
@@ -83,7 +89,11 @@ func cardLayout(r *analysis.Report) []prim {
 	add(rect(0, 0, cardW, cardH, 0, bg))
 
 	// Header.
-	add(text(pad, 58, "LAST.FM INTEGRITY REPORT", 13, fBold, muted))
+	kicker := "LAST.FM INTEGRITY REPORT"
+	if r.Gate != nil {
+		kicker = fmt.Sprintf("LAST.FM PRE-IMPORT CHECK · %.1f s · %d REQUESTS", float64(r.Gate.ElapsedMS)/1000, r.Gate.Requests)
+	}
+	add(text(pad, 58, kicker, 13, fBold, muted))
 	add(text(pad, 100, fit(r.User.Name, 34, fBold, 640), 34, fBold, fg))
 	sub := fmt.Sprintf("%s scrobbles", analysis.Num(r.User.Playcount))
 	if r.User.Registered > 0 {
@@ -102,6 +112,10 @@ func cardLayout(r *analysis.Report) []prim {
 	add(text(cardW-pad-300+128, 80, r.Score.Label, 22, fBold, vc))
 	as := actionStyle[r.Leaderboard.Action]
 	label := "leaderboard: " + r.Leaderboard.Action
+	if r.Gate != nil {
+		as = gateStyle[r.Gate.Decision]
+		label = "import: " + r.Gate.Decision
+	}
 	lw := measure(label, 13, fBold) + 20
 	add(rect(cardW-pad-300+128, 94, lw, 24, 12, as[0]))
 	add(text(cardW-pad-300+138, 111, label, 13, fBold, as[1]))
@@ -154,7 +168,7 @@ func cardLayout(r *analysis.Report) []prim {
 		{fmt.Sprintf("HOURS OVER %d", r.Params.HourLimit), analysis.Num(st.HoursOverLimit), st.HoursOverLimit > 0},
 		{"NEEDS A 3RD PLAYER", analysis.Pct(ig.ExcessShare), ig.ExcessPlays > 0},
 		{"DOUBLE SCROBBLES", analysis.Num(ig.Duplicates), false},
-		{"MONTHS OVER LIMIT", fmt.Sprintf("%d / %d", st.MonthsOverLimit, st.MonthsTotal), st.MonthsOverLimit > 0},
+		{map[bool]string{true: "PERIODS OVER LIMIT", false: "MONTHS OVER LIMIT"}[r.Gate != nil], fmt.Sprintf("%d / %d", st.MonthsOverLimit, st.MonthsTotal), st.MonthsOverLimit > 0},
 		{"ADJUSTED COUNT", adj, false},
 	}
 	tx, ty := 700.0, top+14
@@ -172,7 +186,11 @@ func cardLayout(r *analysis.Report) []prim {
 
 	// Month chart.
 	chartTop, chartH := 480.0, 146.0
-	add(text(pad, chartTop-8, "PLAYS A DAY, MONTH BY MONTH", 12, fBold, muted))
+	chartTitle := "PLAYS A DAY, MONTH BY MONTH"
+	if r.Gate != nil {
+		chartTitle = "PLAYS A DAY, THE WHOLE HISTORY (LAST.FM'S OWN COUNTS)"
+	}
+	add(text(pad, chartTop-8, chartTitle, 12, fBold, muted))
 	add(rect(pad, chartTop, cardW-2*pad, chartH+14, 10, panel))
 	ms := r.Charts.Months
 	if len(ms) > 0 {
@@ -183,16 +201,17 @@ func cardLayout(r *analysis.Report) []prim {
 		maxV = niceCeil(maxV)
 		px, pw, py, ph := pad+12, cardW-2*pad-24, chartTop+10, chartH-14
 		yOf := func(v float64) float64 { return py + ph - v/maxV*ph }
-		bw := pw / float64(len(ms))
-		g := math.Min(2, bw*0.2)
+		bars := barLayout(ms, pw, 34)
 		for i, m := range ms {
+			bw := bars[i].w
+			g := math.Min(2, bw*0.2)
 			h := m.PerDay / maxV * ph
 			if m.Plays > 0 && h < 1.5 {
 				h = 1.5
 			}
-			add(rect(px+float64(i)*bw+g/2, py+ph-h, math.Max(bw-g, 0.8), h, 0, dayColor(m.PerDay)))
-			if strings.HasSuffix(m.Month, "-01") || i == 0 {
-				add(text(px+float64(i)*bw, chartTop+chartH+8, m.Month[:4], 10.5, fRegular, muted))
+			add(rect(px+bars[i].x+g/2, py+ph-h, math.Max(bw-g, 0.8), h, 0, dayColor(m.PerDay)))
+			if bars[i].label != "" {
+				add(text(px+bars[i].x, chartTop+chartH+8, bars[i].label, 10.5, fRegular, muted))
 			}
 		}
 		// Limit lines on top of the bars so they stay visible.

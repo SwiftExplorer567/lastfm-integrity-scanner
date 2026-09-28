@@ -9,8 +9,11 @@ import (
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/scrobble"
 )
 
-// PageSize is the largest page user.getRecentTracks serves.
-const PageSize = 200
+// PageSize is the largest page user.getRecentTracks serves. The official
+// docs say 200; the API accepts 1000, which means five times fewer requests.
+// If Last.fm ever caps it again, totalPages in the answer follows the cap
+// and the download still covers everything.
+const PageSize = 1000
 
 // Progress is called as work completes. It may be called from several
 // goroutines at once.

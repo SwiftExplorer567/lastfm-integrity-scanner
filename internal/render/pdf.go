@@ -98,6 +98,51 @@ func renderPDF(w io.Writer, r *analysis.Report) error {
 	pdf.CellFormat(56, 6, "Leaderboard: "+strings.ToUpper(r.Leaderboard.Action), "", 0, "C", false, 0, "")
 	pdf.SetY(48)
 
+	// Pre-import check.
+	if g := r.Gate; g != nil {
+		heading("Pre-import check: " + strings.ToUpper(g.Decision))
+		pdf.SetFont("go", "", 9)
+		ink(dark)
+		pdf.MultiCell(0, 4.6, g.Reason, "", "L", false)
+		pdf.Ln(1)
+		complete := ""
+		if !g.Complete {
+			complete = " (partial)"
+		}
+		kv(pdf, [][2]string{
+			{"Time and requests", fmt.Sprintf("%.1f s, %d requests", float64(g.ElapsedMS)/1000, g.Requests)},
+			{"History periods read", fmt.Sprintf("%d / %d%s", g.PeriodsRead, g.Periods, complete)},
+			{"Plays sampled", fmt.Sprintf("%s in %d windows", analysis.Num(g.SampledPlay), g.Windows)},
+			{"Distinct songs", analysis.Num(g.DistinctTracks)},
+			{"Top song's share of all plays", analysis.Pct(g.TopTrackShare)},
+			{"Least hours the top songs need / hours since sign-up", fmt.Sprintf("%s / %s", analysis.Num(int64(g.TopTracksMinHrs)), analysis.Num(int64(g.AccountHours)))},
+		})
+		if len(g.TopTracks) > 0 {
+			pdf.Ln(2)
+			table(pdf, []string{"Lifetime top songs", "Plays", "A day", "Least hours"}, []float64{110, 24, 22, 26}, func(add func(...string)) {
+				for _, t := range g.TopTracks {
+					add(t.Artist+" — "+t.Title, analysis.Num(t.Plays), fmt.Sprintf("%.1f", t.PerDay), analysis.Num(int64(t.MinHours)))
+				}
+			})
+		}
+		if len(g.Hotspots) > 0 {
+			pdf.Ln(2)
+			table(pdf, []string{"Densest stretch from", "Days", "Plays", "A day"}, []float64{80, 30, 36, 36}, func(add func(...string)) {
+				for _, h := range g.Hotspots {
+					add(h.Month, strconv.Itoa(h.Days), analysis.Num(h.Plays), analysis.Num(int64(math.Round(h.PerDay))))
+				}
+			})
+		}
+		if len(g.Evidence) > 0 {
+			pdf.Ln(2)
+			table(pdf, []string{"Densest sampled window (UTC)", "Plays", "Span (s)", "A hour", "3rd player"}, []float64{70, 26, 28, 28, 30}, func(add func(...string)) {
+				for _, w := range g.Evidence {
+					add(fmtTime(w.From), analysis.Num(w.Plays), analysis.Num(w.SpanSec), analysis.Num(int64(math.Round(w.PerHour))), analysis.Num(w.Excess))
+				}
+			})
+		}
+	}
+
 	// Leaderboard.
 	heading("Leaderboard recommendation")
 	adj := analysis.Num(r.Leaderboard.AdjustedScrobbles)
@@ -193,18 +238,19 @@ func renderPDF(w io.Writer, r *analysis.Report) error {
 			pdf.Text(x0+1, yOf(l.v)-1, l.s)
 		}
 		pdf.SetDashPattern(nil, 0)
-		bw := cw / float64(len(ms))
+		bars := barLayout(ms, cw, 8)
 		for i, m := range ms {
+			bw := bars[i].w
 			h := m.PerDay / maxV * ch
 			if m.Plays > 0 && h < 0.4 {
 				h = 0.4
 			}
 			fill(dayColor(m.PerDay))
-			pdf.Rect(x0+float64(i)*bw+bw*0.1, y0+ch-h, bw*0.8, h, "F")
-			if strings.HasSuffix(m.Month, "-01") || i == 0 {
+			pdf.Rect(x0+bars[i].x+bw*0.1, y0+ch-h, bw*0.8, h, "F")
+			if bars[i].label != "" {
 				pdf.SetFont("go", "", 6.5)
 				ink(muted)
-				pdf.Text(x0+float64(i)*bw, y0+ch+4, m.Month[:4])
+				pdf.Text(x0+bars[i].x, y0+ch+4, bars[i].label)
 			}
 		}
 		pdf.SetY(y0 + ch + 7)

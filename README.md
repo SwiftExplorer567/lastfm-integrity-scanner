@@ -10,6 +10,45 @@ demo-scripted            score  75 Suspect   leaderboard: exclude 110,760
 demo-faker               score 100 Suspect   leaderboard: exclude 919,755
 ```
 
+## Pre-import check (under 10 seconds, any account size)
+
+`lfscan check <user>` and `GET /v1/check/{user}` decide whether an account may be imported: **pass**, **review**, **block**, or **unknown** (Last.fm did not answer enough in time, so retry). The check never downloads the whole history. It reads Last.fm's aggregate answers and scattered samples, so a 4.6-million-scrobble bot takes about as long as a new account.
+
+| round | requests | what it gets |
+|---|---|---|
+| 1 | `user.getInfo`, `user.getTopTracks period=overall` | lifetime playcount, sign-up date, per-song lifetime totals with song lengths, number of distinct songs |
+| 2 | one `user.getRecentTracks` per period (the account's life cut into ~24 periods, `from`/`to`, `limit=1000`) | **exact** play count of each period (`@attr.total`), plus the newest ≤1,000 consecutive plays of each period as evidence |
+| 3 | the 2 densest periods split into months | exact monthly counts where it matters, plus more windows there |
+| 4 | a page from the middle of the 2 densest months | evidence from inside the hottest stretch, not only its end |
+
+That is typically 20–40 requests in 4 parallel rounds.
+
+Every sampled window goes through the same analysis as a full scan: double scrobbles are forgiven, a second player is accepted, and plays that need a third player are counted. On top of that, the lifetime top songs give **proof that does not need the history**. Every scrobble needs some listening time (half the song, or 30 s when its length is unknown), so *"the top 200 songs alone need 148,784 hours; the account has existed for 43,824"* cannot be explained away.
+
+Measured against the built-in fake Last.fm (120–150 ms per request, the production rate limit):
+
+```
+demo-bot-4m            4,566,128 scrobbles  BLOCK   score 100  0.9 s  31 requests
+demo-veteran             276,374 scrobbles  PASS    score   0  1.0 s  37 requests   (10-year account)
+demo-two-devices         117,235 scrobbles  PASS    score   0                       (phone + forgotten tab)
+demo-double-scrobbler     94,133 scrobbles  PASS    score   0                       (adjusted count 55k)
+demo-scripted            111,456 scrobbles  REVIEW  score  41                       (a song every 31 s)
+```
+
+Run `lfscan demo-check` to reproduce this without an API key.
+
+**Many sign-ups at once.** Last.fm allows 5 requests per second per IP, *averaged over 5 minutes*. The client runs at 4.5/s with a burst of 60, which stays under 1,500 requests in any 5-minute window. Checks run at most 3 at a time, and the rest queue. When the shared budget runs low, each check reads fewer periods (never fewer than 8), so the queue keeps moving. Full-history downloads are held to 3 requests/s, so they never starve checks. In a test with 8 sign-ups arriving together, the first 3 finished in under 1 s and the 8th in 13 s. Sustained, one IP handles roughly 15–25 checks a minute. A result is cached for 6 hours (`force` skips the cache).
+
+### What the Last.fm API docs changed here
+
+Sources: [lastfm-docs/api-docs](https://github.com/lastfm-docs/api-docs) and the official [API terms](https://www.last.fm/api/tos).
+
+- `user.getRecentTracks` accepts **`limit` up to 1000** (the official page says 200). Full scans now need 5× fewer requests: 4.7M scrobbles is about 4,700 pages instead of 23,500.
+- A range query (`from`/`to`) returns the exact count in that range as `@attr.total`. The check is built on this.
+- `user.getTopTracks` carries each song's `duration` and lifetime `playcount`, and `@attr.total` is the number of distinct songs. `user.getInfo` has no such count.
+- **Known API bug:** Last.fm occasionally returns another user's data. Every answer's `@attr.user` is compared with the requested user and re-requested on mismatch, so one account's plays never end up in another's report.
+- Errors come with HTTP 403/404 and a JSON body (`6` user not found, `17` hidden recent listening, `29` rate limit). All of them are handled.
+
 ## How it tells honest mess from cheating
 
 Honest people also produce overlapping plays. For example, a Spotify scrobble and a browser extension can both record the same song, or a YouTube tab left open on the PC can keep playing while the phone plays Spotify. The scanner forgives these cases on purpose:
@@ -33,10 +72,10 @@ Score **0–34 clean**, **35–64 review**, **65+ suspect**. The leaderboard act
 
 ## Speed
 
-- **Parallel page downloads** (200 scrobbles per page) with one shared rate limiter, 5 req/s by default. Retries back off on Last.fm errors 8/11/16/29, HTTP 5xx and truncated responses. A page that still fails gets a second pass and is then reported as missing; it does not sink the whole scan.
+- **Parallel page downloads** (1,000 scrobbles per page) with one shared rate limiter (4.5 req/s, burst 60; bulk downloads capped at 3 req/s). Retries back off on Last.fm errors 8/11/16/29, HTTP 5xx and truncated responses. A page that still fails gets a second pass and is then reported as missing; it does not sink the whole scan.
 - **Upper time bound pinned** at scan start, so page boundaries stay stable while new scrobbles arrive.
 - **Local cache** (`data/users/<user>/history.bin.gz`, about 3–4 bytes per play). A rescan downloads only what is new, plus the last 72 h to catch offline plays that sync late.
-- **Auto mode** does a full scan for accounts up to 300k scrobbles (about 5 min cold at 5 req/s, seconds when cached). Bigger accounts get a **quick** scan: the last 90 days (up to 150 pages) plus Last.fm's own monthly totals, at one cheap request per month, so the whole-history chart and the "months over the limit" check still cover everything.
+- **Auto mode** does a full scan for accounts up to 300k scrobbles (about 300 pages, under 2 minutes cold, seconds when cached). Bigger accounts get a **quick** scan: the last 90 days (up to 150 pages) plus Last.fm's own monthly totals, at one cheap request per month, so the whole-history chart and the "months over the limit" check still cover everything.
 - The analysis itself is O(n log n) and runs in memory. A 920k-play history takes about 0.1 s.
 
 ## Running
@@ -48,6 +87,8 @@ cp .env.example .env          # put your LASTFM_API_KEY in it
 go build -o bin/lfscan ./cmd/lfscan
 
 bin/lfscan demo               # example reports from generated accounts, no API needed
+bin/lfscan demo-check         # pre-import checks against a built-in fake Last.fm, no API needed
+bin/lfscan check HasanJWS ChAelitaNicole   # pre-import check, a few seconds each
 bin/lfscan scan HasanJWS -format json,html,pdf,png
 bin/lfscan scan user1 user2 -mode quick
 bin/lfscan render data/reports/hasanjws/latest.json -format pdf
@@ -63,7 +104,7 @@ Or with Docker: `docker build -t lfscan . && docker run -p 8080:8080 --env-file 
 | `LASTFM_API_KEY` | – | required; only read methods are used, so the shared secret is not needed |
 | `LFSCAN_TOKEN` | – | bearer token for the HTTP API (set it!) |
 | `LFSCAN_DATA_DIR` | `data` | cache, song lengths and saved reports |
-| `LFSCAN_RPS` / `LFSCAN_BURST` | 5 / 10 | request rate shared by all scans |
+| `LFSCAN_RPS` / `LFSCAN_BURST` | 4.5 / 60 | request rate shared by everything (Last.fm: 5/s averaged over 5 min) |
 | `LFSCAN_WORKERS` | 8 | requests in flight per scan |
 | `LFSCAN_AUTO_FULL_MAX` | 300000 | auto mode does a full scan up to this many scrobbles |
 | `LFSCAN_DURATION_LOOKUPS` | 300 | `track.getInfo` calls per scan (0 disables) |
@@ -74,6 +115,14 @@ Or with Docker: `docker build -t lfscan . && docker run -p 8080:8080 --env-file 
 Every `/v1` route requires `Authorization: Bearer $LFSCAN_TOKEN`.
 
 ```http
+GET  /v1/check/{user}[?force=1]      pre-import check, synchronous, a few seconds
+POST /v1/check            {"user": "HasanJWS", "force": false}
+→ 200 {"decision": "pass|review|block|unknown", "reason": "…", "score": {…},
+       "signals": [...], "gate": {…evidence…},
+       "reports": {"html": "/v1/users/HasanJWS/check.html", "png": …, "pdf": …, "json": …}}
+→ 404 not_found · 422 private (recent listening hidden) · 503 busy (queue full, retry)
+GET  /v1/users/{user}/check.{json|html|pdf|png|svg}
+
 POST /v1/scans            {"user": "HasanJWS", "mode": "auto|full|quick", "refresh": false}
 → 202 {"id": "…", "status": "queued", …}
 

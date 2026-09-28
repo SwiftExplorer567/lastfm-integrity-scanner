@@ -112,13 +112,15 @@ func (c *Client) RecentTracks(ctx context.Context, user string, page, limit int,
 		Recent struct {
 			Track oneOrMany[recentTrack] `json:"track"`
 			Attr  struct {
+				User       string  `json:"user"`
 				Page       flexInt `json:"page"`
 				TotalPages flexInt `json:"totalPages"`
 				Total      flexInt `json:"total"`
 			} `json:"@attr"`
 		} `json:"recenttracks"`
 	}
-	if err := c.call(ctx, "user.getRecentTracks", p, &resp); err != nil {
+	err := c.callFor(ctx, "user.getRecentTracks", p, &resp, user, func() string { return resp.Recent.Attr.User })
+	if err != nil {
 		return nil, err
 	}
 	r := resp.Recent
@@ -147,6 +149,45 @@ func (c *Client) RecentTracks(ctx context.Context, user string, page, limit int,
 		})
 	}
 	return out, nil
+}
+
+// TopTrack is one row of a user's lifetime (or period) top tracks.
+type TopTrack struct {
+	Artist  string
+	Title   string
+	Plays   int64
+	Seconds int // 0 when Last.fm does not know the length
+}
+
+// TopTracks returns the user's most played tracks for period (overall,
+// 7day, 1month, 3month, 6month, 12month) and how many distinct tracks the
+// user has in that period.
+func (c *Client) TopTracks(ctx context.Context, user, period string, limit int) ([]TopTrack, int64, error) {
+	var resp struct {
+		Top struct {
+			Track oneOrMany[struct {
+				Name     string  `json:"name"`
+				Duration flexInt `json:"duration"`
+				Plays    flexInt `json:"playcount"`
+				Artist   struct {
+					Name string `json:"name"`
+				} `json:"artist"`
+			}] `json:"track"`
+			Attr struct {
+				User  string  `json:"user"`
+				Total flexInt `json:"total"`
+			} `json:"@attr"`
+		} `json:"toptracks"`
+	}
+	p := url.Values{"user": {user}, "period": {period}, "limit": {strconv.Itoa(limit)}}
+	if err := c.callFor(ctx, "user.getTopTracks", p, &resp, user, func() string { return resp.Top.Attr.User }); err != nil {
+		return nil, 0, err
+	}
+	out := make([]TopTrack, 0, len(resp.Top.Track))
+	for _, t := range resp.Top.Track {
+		out = append(out, TopTrack{Artist: t.Artist.Name, Title: t.Name, Plays: int64(t.Plays), Seconds: int(t.Duration)})
+	}
+	return out, int64(resp.Top.Attr.Total), nil
 }
 
 // CountScrobbles returns Last.fm's own count of scrobbles between from and to

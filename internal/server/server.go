@@ -5,6 +5,9 @@
 //	GET  /v1/scans/{id}/report.{fmt}   the job's report as json|html|pdf|png|svg
 //	GET  /v1/users/{user}/report.{fmt} the latest saved report for a user
 //	POST /v1/batch                     start scans for many users: {"users":[...],"mode"}
+//	POST /v1/check                     pre-import check, answers in seconds: {"user","force"}
+//	GET  /v1/check/{user}              the same (cached for a few hours unless ?force=1)
+//	GET  /v1/users/{user}/check.{fmt}  the latest pre-import check as json|html|pdf|png|svg
 //	GET  /healthz
 //
 // Every /v1 route requires "Authorization: Bearer <token>" when a token is
@@ -107,6 +110,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/scans/{id}", s.auth(s.handleGet))
 	mux.HandleFunc("GET /v1/scans/{id}/{file}", s.auth(s.handleJobReport))
 	mux.HandleFunc("GET /v1/users/{user}/{file}", s.auth(s.handleUserReport))
+	mux.HandleFunc("POST /v1/check", s.auth(s.handleCheck))
+	mux.HandleFunc("GET /v1/check/{user}", s.auth(s.handleCheck))
 	return logRequests(s.log, mux)
 }
 
@@ -194,8 +199,79 @@ func (s *Server) handleJobReport(w http.ResponseWriter, r *http.Request) {
 	serveReport(w, r, rep, r.PathValue("file"))
 }
 
+// checkView is the answer an import pipeline acts on: the decision up
+// front, the evidence behind it, links to the rendered report.
+type checkView struct {
+	User        string               `json:"user"`
+	Decision    string               `json:"decision"`
+	Reason      string               `json:"reason"`
+	Score       analysis.Score       `json:"score"`
+	Leaderboard analysis.Leaderboard `json:"leaderboard"`
+	Signals     []analysis.Signal    `json:"signals"`
+	Gate        *analysis.Gate       `json:"gate"`
+	Reports     map[string]string    `json:"reports"`
+	Report      *analysis.Report     `json:"report,omitempty"`
+}
+
+func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		User  string `json:"user"`
+		Force bool   `json:"force"`
+	}
+	if r.Method == http.MethodPost {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_request", "body must be JSON: {\"user\": \"name\"}")
+			return
+		}
+	} else {
+		body.User = r.PathValue("user")
+		body.Force = r.URL.Query().Get("force") == "1"
+	}
+	body.User = strings.TrimSpace(body.User)
+	if body.User == "" || len(body.User) > 64 {
+		writeErr(w, http.StatusBadRequest, "bad_request", "user is required")
+		return
+	}
+	// The check bounds its own Last.fm time; this bounds the wait in the
+	// queue behind other checks.
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	rep, err := s.scan.Check(ctx, body.User, body.Force)
+	if err != nil {
+		switch {
+		case lastfm.IsNotFound(err):
+			writeErr(w, http.StatusNotFound, "not_found", err.Error())
+		case lastfm.IsPrivate(err):
+			writeErr(w, http.StatusUnprocessableEntity, "private", err.Error())
+		case errors.Is(err, context.DeadlineExceeded):
+			writeErr(w, http.StatusServiceUnavailable, "busy", "too many checks queued; retry shortly")
+		default:
+			writeErr(w, http.StatusBadGateway, "failed", err.Error())
+		}
+		return
+	}
+	v := checkView{
+		User: rep.User.Name, Decision: rep.Gate.Decision, Reason: rep.Gate.Reason,
+		Score: rep.Score, Leaderboard: rep.Leaderboard, Signals: rep.Signals, Gate: rep.Gate,
+		Reports: map[string]string{},
+	}
+	for _, f := range render.Formats {
+		v.Reports[string(f)] = "/v1/users/" + rep.User.Name + "/check." + string(f)
+	}
+	if r.URL.Query().Get("report") == "1" {
+		v.Report = rep
+	}
+	s.log.Info("check", "user", rep.User.Name, "decision", rep.Gate.Decision, "score", rep.Score.Value,
+		"ms", rep.Gate.ElapsedMS, "requests", rep.Gate.Requests)
+	writeJSON(w, http.StatusOK, v)
+}
+
 func (s *Server) handleUserReport(w http.ResponseWriter, r *http.Request) {
-	rep, err := s.scan.LatestReport(r.PathValue("user"))
+	load := s.scan.LatestReport
+	if strings.HasPrefix(r.PathValue("file"), "check.") {
+		load = s.scan.LatestCheck
+	}
+	rep, err := load(r.PathValue("user"))
 	if errors.Is(err, os.ErrNotExist) {
 		writeErr(w, http.StatusNotFound, "not_found", "no saved report for this user; POST /v1/scans first")
 		return
@@ -209,8 +285,8 @@ func (s *Server) handleUserReport(w http.ResponseWriter, r *http.Request) {
 
 func serveReport(w http.ResponseWriter, r *http.Request, rep *analysis.Report, file string) {
 	name, ext, ok := strings.Cut(file, ".")
-	if !ok || name != "report" {
-		writeErr(w, http.StatusNotFound, "not_found", "use report.json, report.html, report.pdf, report.png or report.svg")
+	if !ok || (name != "report" && name != "check") {
+		writeErr(w, http.StatusNotFound, "not_found", "use report.{json,html,pdf,png,svg} or check.{json,html,pdf,png,svg}")
 		return
 	}
 	f, err := render.ParseFormat(ext)

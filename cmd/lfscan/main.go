@@ -1,5 +1,6 @@
 // Command lfscan scans Last.fm accounts for faked scrobbles.
 //
+//	lfscan check <user>... [-format json,html,png] [-out dir]
 //	lfscan scan <user>... [-mode auto|full|quick] [-format html,pdf,png] [-out dir]
 //	lfscan serve [-addr :8080]
 //	lfscan render <report.json> [-format html,pdf,png,svg] [-out dir]
@@ -19,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,6 +31,7 @@ import (
 
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/analysis"
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/lastfm"
+	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/mockfm"
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/render"
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/scanner"
 	"github.com/swiftexplorer567/lastfm-integrity-scanner/internal/server"
@@ -47,12 +50,16 @@ func main() {
 	switch os.Args[1] {
 	case "scan":
 		err = cmdScan(ctx, os.Args[2:])
+	case "check":
+		err = cmdCheck(ctx, os.Args[2:])
 	case "serve":
 		err = cmdServe(ctx, os.Args[2:])
 	case "render":
 		err = cmdRender(os.Args[2:])
 	case "demo":
 		err = cmdDemo(os.Args[2:])
+	case "demo-check":
+		err = cmdDemoCheck(ctx, os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -68,10 +75,12 @@ func main() {
 func usage() {
 	fmt.Fprint(os.Stderr, `lfscan: Last.fm scrobble integrity scanner
 
+  lfscan check <user>... [-format json,html,png] [-out dir]   pre-import check, under 10 s per account
   lfscan scan <user>... [-mode auto|full|quick] [-format json,html,pdf,png,svg] [-out dir] [-refresh]
   lfscan serve [-addr :8080]
   lfscan render <report.json> [-format html,pdf,png,svg] [-out dir]
   lfscan demo [-out dir]          reports for generated example accounts, no API needed
+  lfscan demo-check [-out dir]    pre-import checks against a built-in fake Last.fm, no API needed
 
 Environment: LASTFM_API_KEY, LFSCAN_DATA_DIR (./data), LFSCAN_TOKEN, LFSCAN_RPS (5),
 LFSCAN_WORKERS (8), LFSCAN_ADDR (:8080). A .env file in the working directory is read too.
@@ -149,6 +158,100 @@ func cmdScan(ctx context.Context, args []string) error {
 		return fmt.Errorf("%d of %d scans failed", failed, len(users))
 	}
 	return nil
+}
+
+func cmdCheck(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("check", flag.ExitOnError)
+	formats := fs.String("format", "json,html,png", "comma-separated: json,html,pdf,png,svg")
+	out := fs.String("out", "reports", "directory for report files")
+	users, err := parseInterleaved(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(users) == 0 {
+		return errors.New("check: give at least one Last.fm username")
+	}
+	fmts, err := parseFormats(*formats)
+	if err != nil {
+		return err
+	}
+	s, err := newScanner()
+	if err != nil {
+		return err
+	}
+	return runChecks(ctx, s, users, fmts, *out)
+}
+
+func runChecks(ctx context.Context, s *scanner.Scanner, users []string, fmts []render.Format, out string) error {
+	failed := 0
+	for _, u := range users {
+		rep, err := s.Check(ctx, u, true)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", u, err)
+			failed++
+			continue
+		}
+		g := rep.Gate
+		fmt.Printf("%-24s %-7s score %3d  %s scrobbles  %.1fs  %d requests  %d/%d periods  %s plays sampled\n",
+			rep.User.Name, strings.ToUpper(g.Decision), rep.Score.Value, analysis.Num(rep.User.Playcount),
+			float64(g.ElapsedMS)/1000, g.Requests, g.PeriodsRead, g.Periods, analysis.Num(g.SampledPlay))
+		fmt.Printf("    %s\n", g.Reason)
+		for _, sg := range rep.Signals {
+			if sg.Points > 0 {
+				fmt.Printf("    %+4d  %s: %s\n", sg.Points, sg.Title, sg.Detail)
+			}
+		}
+		if err := writeReports(rep, fmts, out); err != nil {
+			return err
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d checks failed", failed, len(users))
+	}
+	return nil
+}
+
+// cmdDemoCheck runs the pre-import check against an in-process fake
+// Last.fm serving generated accounts, with realistic latency and the real
+// rate limit, so the check can be tried without an API key.
+func cmdDemoCheck(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("demo-check", flag.ExitOnError)
+	out := fs.String("out", "reports/demo-check", "directory for report files")
+	formats := fs.String("format", "json,html,pdf,png", "comma-separated formats")
+	fs.Parse(args)
+	fmts, err := parseFormats(*formats)
+	if err != nil {
+		return err
+	}
+	mock := mockfm.New()
+	mock.Latency = 150 * time.Millisecond
+	accounts := []struct {
+		name string
+		p    synth.Profile
+		days int
+	}{
+		{"demo-bot-4m", synth.Faker, 5 * 365},
+		{"demo-veteran", synth.Honest, 10 * 365},
+		{"demo-two-devices", synth.TwoDevices, 3 * 365},
+		{"demo-double-scrobbler", synth.DoubleScrobbler, 2 * 365},
+		{"demo-scripted", synth.Scripted, 365},
+	}
+	fmt.Fprintln(os.Stderr, "generating accounts…")
+	var names []string
+	for i, a := range accounts {
+		start := time.Now().AddDate(0, 0, -a.days-1)
+		g := synth.Generate(a.name, synth.Options{Profile: a.p, Seed: uint64(40 + i), Start: start, Days: a.days})
+		mock.AddUser(&mockfm.User{History: g.History, Registered: start.Unix(), Durations: g.Durations})
+		names = append(names, a.name)
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+	client := lastfm.New(lastfm.Config{APIKey: "demo", BaseURL: srv.URL})
+	s, err := scanner.New(client, filepath.Join(os.TempDir(), "lfscan-demo"), scanner.DefaultOptions())
+	if err != nil {
+		return err
+	}
+	return runChecks(ctx, s, names, fmts, *out)
 }
 
 func cmdServe(ctx context.Context, args []string) error {

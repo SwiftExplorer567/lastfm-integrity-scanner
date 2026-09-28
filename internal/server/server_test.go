@@ -26,7 +26,9 @@ func TestScanOverHTTP(t *testing.T) {
 	defer fm.Close()
 
 	client := lastfm.New(lastfm.Config{APIKey: "k", BaseURL: fm.URL, RPS: 1000, Burst: 50, RetryBase: time.Millisecond})
-	sc, err := scanner.New(client, t.TempDir(), scanner.DefaultOptions())
+	opts := scanner.DefaultOptions()
+	opts.BulkRPS = 0
+	sc, err := scanner.New(client, t.TempDir(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +87,24 @@ func TestScanOverHTTP(t *testing.T) {
 	resp, b = do("GET", "/v1/users/carol/report.png", "")
 	if resp.StatusCode != 200 || !bytes.HasPrefix(b, []byte("\x89PNG")) {
 		t.Errorf("latest png: %d", resp.StatusCode)
+	}
+
+	// Pre-import check: synchronous, decision up front.
+	resp, body = do("GET", "/v1/check/carol?force=1", "")
+	var check struct {
+		Decision string            `json:"decision"`
+		Reports  map[string]string `json:"reports"`
+	}
+	json.Unmarshal(body, &check)
+	if resp.StatusCode != 200 || check.Decision != "pass" {
+		t.Fatalf("check: %d %s", resp.StatusCode, body)
+	}
+	resp, b = do("GET", check.Reports["html"], "")
+	if resp.StatusCode != 200 || !strings.Contains(string(b), "Pre-import check") {
+		t.Errorf("check html: %d", resp.StatusCode)
+	}
+	if resp, _ := do("POST", "/v1/check", `{"user":"nobody"}`); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("check unknown user: %d, want 404", resp.StatusCode)
 	}
 
 	resp, body = do("POST", "/v1/scans", `{"user":"nobody"}`)

@@ -40,7 +40,11 @@ type Options struct {
 	// RefetchHours is how far before the end of the cached history an
 	// incremental scan re-downloads, to catch offline plays synced late.
 	RefetchHours int
-	Params       analysis.Params
+	// BulkRPS caps full and quick history downloads below the client's
+	// overall rate, so pre-import checks always have requests left.
+	BulkRPS float64
+	Check   CheckOptions
+	Params  analysis.Params
 }
 
 func DefaultOptions() Options {
@@ -51,6 +55,8 @@ func DefaultOptions() Options {
 		QuickMaxPages:        150,
 		DurationLookups:      300,
 		RefetchHours:         72,
+		BulkRPS:              3,
+		Check:                DefaultCheckOptions(),
 		Params:               analysis.DefaultParams(),
 	}
 }
@@ -63,6 +69,9 @@ type Scanner struct {
 
 	// One scan per user at a time; they share the on-disk cache.
 	locks sync.Map
+	// bulk is Client held to Opts.BulkRPS, shared by every download.
+	bulk  *lastfm.Client
+	check checkState
 }
 
 func New(client *lastfm.Client, dataDir string, opts Options) (*Scanner, error) {
@@ -70,7 +79,11 @@ func New(client *lastfm.Client, dataDir string, opts Options) (*Scanner, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &Scanner{Client: client, Store: scrobble.Store{Dir: dataDir}, Durations: dc, Opts: opts}, nil
+	s := &Scanner{Client: client, Store: scrobble.Store{Dir: dataDir}, Durations: dc, Opts: opts, bulk: client}
+	if opts.BulkRPS > 0 {
+		s.bulk = client.Throttled(opts.BulkRPS)
+	}
+	return s, nil
 }
 
 // Request is one scan.
@@ -147,7 +160,7 @@ func (s *Scanner) Scan(ctx context.Context, req Request, progress Progress) (*an
 		}
 	}
 	fresh := scrobble.New(user)
-	fr, err := s.Client.FetchHistory(ctx, fresh, fetchFrom, now, lastfm.FetchOptions{Workers: s.Opts.Workers, MaxPages: maxPages}, progress)
+	fr, err := s.bulk.FetchHistory(ctx, fresh, fetchFrom, now, lastfm.FetchOptions{Workers: s.Opts.Workers, MaxPages: maxPages}, progress)
 	if err != nil {
 		return nil, fmt.Errorf("history: %w", err)
 	}
@@ -194,7 +207,7 @@ func (s *Scanner) Scan(ctx context.Context, req Request, progress Progress) (*an
 			byMonth[m.Month] = m
 		}
 		list := lastfm.Months(info.Registered, now)
-		mc, err := s.Client.MonthTotals(ctx, user, list, byMonth, now, s.Opts.Workers, progress)
+		mc, err := s.bulk.MonthTotals(ctx, user, list, byMonth, now, s.Opts.Workers, progress)
 		if err != nil {
 			return nil, fmt.Errorf("monthly totals: %w", err)
 		}
@@ -298,10 +311,10 @@ func (s *Scanner) durations(ctx context.Context, h *scrobble.History, budget int
 			missingIdx = append(missingIdx, c.track)
 		}
 	}
-	if len(missing) == 0 || s.Client == nil {
+	if len(missing) == 0 || s.bulk == nil {
 		return out, 0
 	}
-	got := s.Client.TrackDurations(ctx, missing, s.Opts.Workers, progress)
+	got := s.bulk.TrackDurations(ctx, missing, s.Opts.Workers, progress)
 	for i, t := range missing {
 		d, ok := got[t]
 		if !ok {
@@ -317,7 +330,11 @@ func (s *Scanner) durations(ctx context.Context, h *scrobble.History, budget int
 }
 
 // SaveReport writes the report as the user's latest and into their history.
-func (s *Scanner) SaveReport(r *analysis.Report) error {
+func (s *Scanner) SaveReport(r *analysis.Report) error { return s.saveReportAs(r, "") }
+
+// saveReportAs saves under a prefix: "" for scans, "check" for pre-import
+// checks, which keep their own latest.
+func (s *Scanner) saveReportAs(r *analysis.Report, kind string) error {
 	dir := filepath.Join(s.Store.Dir, "reports", scrobble.SafeName(r.User.Name))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -326,20 +343,29 @@ func (s *Scanner) SaveReport(r *analysis.Report) error {
 	if err != nil {
 		return err
 	}
-	name := r.GeneratedAt.Format("20060102T150405Z") + ".json"
+	prefix := ""
+	if kind != "" {
+		prefix = kind + "-"
+	}
+	name := prefix + r.GeneratedAt.Format("20060102T150405Z") + ".json"
 	if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, "latest.json.tmp")
+	tmp := filepath.Join(dir, prefix+"latest.json.tmp")
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(dir, "latest.json"))
+	return os.Rename(tmp, filepath.Join(dir, prefix+"latest.json"))
 }
 
-// LatestReport loads the most recent saved report for user.
-func (s *Scanner) LatestReport(user string) (*analysis.Report, error) {
-	b, err := os.ReadFile(filepath.Join(s.Store.Dir, "reports", scrobble.SafeName(user), "latest.json"))
+// LatestReport loads the most recent saved scan report for user.
+func (s *Scanner) LatestReport(user string) (*analysis.Report, error) { return s.latest(user, "") }
+
+// LatestCheck loads the most recent saved pre-import check for user.
+func (s *Scanner) LatestCheck(user string) (*analysis.Report, error) { return s.latest(user, "check-") }
+
+func (s *Scanner) latest(user, prefix string) (*analysis.Report, error) {
+	b, err := os.ReadFile(filepath.Join(s.Store.Dir, "reports", scrobble.SafeName(user), prefix+"latest.json"))
 	if err != nil {
 		return nil, err
 	}

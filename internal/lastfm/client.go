@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -24,7 +25,9 @@ type Config struct {
 	APIKey  string
 	BaseURL string
 	// RPS is the sustained request rate across every goroutine using this
-	// client. Last.fm asks for about 5 per second per key.
+	// client. Last.fm's terms allow 5 per second per IP, averaged over five
+	// minutes, so short bursts are fine: RPS 4.5 with Burst 60 stays under
+	// 1,500 requests in any five-minute window.
 	RPS        float64
 	Burst      int
 	Timeout    time.Duration
@@ -39,6 +42,7 @@ type Client struct {
 	cfg     Config
 	http    *http.Client
 	limiter *rate.Limiter
+	extra   *rate.Limiter // optional tighter limit, see Throttled
 }
 
 func New(cfg Config) *Client {
@@ -46,10 +50,10 @@ func New(cfg Config) *Client {
 		cfg.BaseURL = DefaultBaseURL
 	}
 	if cfg.RPS <= 0 {
-		cfg.RPS = 5
+		cfg.RPS = 4.5
 	}
 	if cfg.Burst <= 0 {
-		cfg.Burst = 10
+		cfg.Burst = 60
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Second
@@ -115,6 +119,44 @@ func IsPrivate(err error) bool {
 	return errors.As(err, &ae) && ae.Code == ErrLoginRequired
 }
 
+// callFor is call for per-user methods. Last.fm occasionally answers with
+// another user's data (a documented API bug); an answer whose user does not
+// match is discarded and asked for again, so one user's plays can never end
+// up in another user's report.
+func (c *Client) callFor(ctx context.Context, method string, params url.Values, out any, user string, got func() string) error {
+	for attempt := 0; ; attempt++ {
+		if err := c.call(ctx, method, params, out); err != nil {
+			return err
+		}
+		g := got()
+		if g == "" || strings.EqualFold(g, user) {
+			return nil
+		}
+		if attempt == 2 {
+			return fmt.Errorf("last.fm: %s returned data for %q instead of %q", method, g, user)
+		}
+	}
+}
+
+// Tokens reports how many requests could start right now without waiting.
+// It is how callers notice the shared budget is under pressure.
+func (c *Client) Tokens() float64 {
+	t := c.limiter.Tokens()
+	if c.extra != nil {
+		t = min(t, c.extra.Tokens())
+	}
+	return t
+}
+
+// Throttled returns a client that shares this one's connection pool and
+// rate limit but is additionally held to rps. Bulk downloads use it so they
+// always leave headroom for the fast pre-import checks.
+func (c *Client) Throttled(rps float64) *Client {
+	cp := *c
+	cp.extra = rate.NewLimiter(rate.Limit(rps), max(1, int(rps)))
+	return &cp
+}
+
 type httpError struct {
 	status int
 	body   string
@@ -140,6 +182,11 @@ func (c *Client) call(ctx context.Context, method string, params url.Values, out
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
 			if err := sleep(ctx, backoff(c.cfg.RetryBase, attempt, last)); err != nil {
+				return err
+			}
+		}
+		if c.extra != nil {
+			if err := c.extra.Wait(ctx); err != nil {
 				return err
 			}
 		}

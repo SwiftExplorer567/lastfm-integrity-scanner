@@ -76,7 +76,11 @@ func Render(w io.Writer, r *analysis.Report, f Format) error {
 
 // Filename is a sensible download name for a report.
 func Filename(r *analysis.Report, f Format) string {
-	return fmt.Sprintf("integrity-%s-%s.%s", strings.ToLower(r.User.Name), r.GeneratedAt.Format("20060102"), f)
+	kind := "integrity"
+	if r.Gate != nil {
+		kind = "check"
+	}
+	return fmt.Sprintf("%s-%s-%s.%s", kind, strings.ToLower(r.User.Name), r.GeneratedAt.Format("20060102"), f)
 }
 
 //go:embed report.html.tmpl
@@ -97,6 +101,17 @@ var funcs = template.FuncMap{
 			return "–"
 		}
 		return time.Unix(ts, 0).UTC().Format("2006-01-02 15:04 UTC")
+	},
+	"upper": strings.ToUpper,
+	"msec":  func(ms int64) float64 { return float64(ms) / 1000 },
+	"dur": func(sec int64) string {
+		switch {
+		case sec < 120:
+			return fmt.Sprintf("%ds", sec)
+		case sec < 7200:
+			return fmt.Sprintf("%d min", sec/60)
+		}
+		return fmt.Sprintf("%.1f h", float64(sec)/3600)
 	},
 	"clock": func(ts int64) string { return time.Unix(ts, 0).UTC().Format("15:04:05") },
 	"sub":   func(a, b int) int { return a - b },

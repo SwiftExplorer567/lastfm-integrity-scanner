@@ -19,6 +19,9 @@ type Report struct {
 	Stats       Stats       `json:"stats"`
 	Charts      Charts      `json:"charts"`
 	Params      Params      `json:"params"`
+	// Gate is set by the pre-import check: the admission decision and the
+	// evidence gathered from Last.fm's aggregate endpoints.
+	Gate *Gate `json:"gate,omitempty"`
 }
 
 type Profile struct {
@@ -153,8 +156,11 @@ type HourStat struct {
 	Plays int   `json:"plays"`
 }
 
+// MonthStat is one bar of the history chart: a calendar month, or a longer
+// period starting at Month when Days is set.
 type MonthStat struct {
 	Month  string  `json:"month"`
+	Days   int     `json:"days,omitempty"`
 	Plays  int64   `json:"plays"`
 	PerDay float64 `json:"per_day"`
 }
@@ -193,4 +199,56 @@ type Charts struct {
 	BusiestDays []DayStat     `json:"busiest_days"`
 	Bursts      []Burst       `json:"bursts"`
 	TopRepeats  []RepeatTrack `json:"top_repeats"`
+}
+
+// Gate is the outcome of the pre-import check.
+type Gate struct {
+	// Decision is pass (import automatically), review (a moderator decides),
+	// block (do not import) or unknown (Last.fm did not answer enough of the
+	// check in time; retry later).
+	Decision string `json:"decision"`
+	Reason   string `json:"reason"`
+
+	Requests    int   `json:"requests"`
+	ElapsedMS   int64 `json:"elapsed_ms"`
+	Complete    bool  `json:"complete"`
+	Periods     int   `json:"periods"`
+	PeriodsRead int   `json:"periods_read"`
+	SampledPlay int   `json:"sampled_plays"`
+	Windows     int   `json:"windows"`
+
+	// Lifetime per-song totals (user.getTopTracks, period=overall).
+	DistinctTracks  int64           `json:"distinct_tracks"`
+	PlaysPerTrack   float64         `json:"plays_per_track"`
+	TopTrackShare   float64         `json:"top_track_share"`
+	TopTracksMinHrs float64         `json:"top_tracks_min_hours"`
+	AccountHours    float64         `json:"account_hours"`
+	TopTracks       []TrackEvidence `json:"top_tracks"`
+
+	// The densest stretches of the history, at month resolution.
+	Hotspots []MonthStat `json:"hotspots"`
+	// Sampled windows of consecutive plays, densest first.
+	Evidence []Window `json:"evidence"`
+}
+
+// TrackEvidence is one song's lifetime total and the least listening time
+// it implies.
+type TrackEvidence struct {
+	Artist   string  `json:"artist"`
+	Title    string  `json:"title"`
+	Plays    int64   `json:"plays"`
+	Seconds  int     `json:"seconds,omitempty"` // song length when Last.fm knows it
+	MinHours float64 `json:"min_hours"`         // plays × least time a scrobble needs
+	PerDay   float64 `json:"per_day"`           // plays per day since the account opened
+}
+
+// Window is a run of consecutive plays read from one place in the history.
+type Window struct {
+	From       int64   `json:"from"`
+	To         int64   `json:"to"`
+	Plays      int     `json:"plays"`
+	SpanSec    int64   `json:"span_seconds"`
+	Duplicates int     `json:"duplicates"`
+	Excess     int     `json:"excess"`
+	PerHour    float64 `json:"per_hour"`
 }
