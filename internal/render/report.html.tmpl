@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Integrity report · {{.R.User.Name}}</title>
+<style>
+:root{--bg:#0d1117;--panel:#131a22;--panel2:#171f29;--line:#243040;--text:#e6edf3;--muted:#8b98a9;--green:#22c55e;--amber:#f59e0b;--red:#f87171;--pink:#f472b6;--blue:#38bdf8;--violet:#a78bfa;
+--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:24px 16px 48px}
+header{display:flex;align-items:center;gap:14px;margin-bottom:20px;flex-wrap:wrap}
+header img{width:52px;height:52px;border-radius:50%;background:var(--panel2)}
+header h1{margin:0;font-size:22px}
+header .sub{color:var(--muted);font-size:12.5px}
+.badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11.5px;font-weight:600;vertical-align:middle;margin-left:6px}
+.b-clean{background:#14532d;color:#86efac}.b-review{background:#78350f;color:#fcd34d}.b-suspect{background:#7f1d1d;color:#fecaca}
+.b-keep{background:#14532d;color:#86efac}.b-adjust{background:#1e3a5f;color:#93c5fd}.b-exclude{background:#7f1d1d;color:#fecaca}
+.grid{display:grid;grid-template-columns:320px 1fr;gap:16px;align-items:start}
+@media(max-width:860px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:16px}
+.card h2{font-size:13px;margin:0 0 10px;font-weight:650;letter-spacing:.2px}
+.card p.lead{color:var(--muted);font-size:12.5px;margin:-4px 0 12px}
+.score{display:flex;gap:12px;align-items:center;margin-bottom:10px}
+.score .n{font:700 30px/1 var(--mono);padding:8px 12px;border-radius:8px;border:1px solid var(--line);min-width:64px;text-align:center}
+.v-clean .n{color:var(--green)}.v-review .n{color:var(--amber)}.v-suspect .n{color:var(--red)}
+.score .l{font-weight:650;font-size:16px}.score .s{color:var(--muted);font-size:12px}
+.sig{display:flex;gap:10px;align-items:flex-start;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);margin-bottom:8px}
+.sig .p{font:600 11px var(--mono);padding:2px 6px;border-radius:5px;background:#3b1219;color:var(--red);white-space:nowrap}
+.sig.k-volume .p{background:#3b2a0f;color:var(--amber)}.sig.k-pattern .p{background:#2e1f47;color:var(--violet)}.sig.k-benign .p{background:#0f2e22;color:var(--green)}
+.sig .t{font-weight:600;font-size:13px}.sig .d{color:var(--muted);font-size:12px}
+dl.kv{display:grid;grid-template-columns:1fr auto;gap:6px 12px;margin:0;font-size:12.5px}
+dl.kv dt{color:var(--muted)}dl.kv dd{margin:0;text-align:right;font-family:var(--mono)}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+@media(max-width:700px){.tiles{grid-template-columns:repeat(2,1fr)}}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.tile .h{font-size:10.5px;letter-spacing:.8px;text-transform:uppercase;color:var(--muted)}
+.tile .v{font:700 18px var(--mono);margin:4px 0 2px}
+.tile .f{font-size:11.5px;color:var(--muted)}
+.tile.warn .v{color:var(--red)}.tile.ok .v{color:var(--green)}.tile.info .v{color:var(--blue)}
+.legend{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:11.5px;margin-top:8px;align-items:center}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.year{margin-bottom:10px;overflow-x:auto}
+.year .yh{display:flex;justify-content:space-between;font-size:12px;font-weight:600;margin-bottom:2px}
+.year .yh span{color:var(--muted);font-weight:400}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:860px){.two{grid-template-columns:1fr}}
+.bar{display:grid;grid-template-columns:70px 1fr 110px;gap:8px;align-items:center;font-size:12px;margin:5px 0}
+.bar .track{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden}
+.bar .fill{height:100%;background:#64748b}.bar .fill.hot{background:var(--red)}
+.bar .num{text-align:right;font-family:var(--mono);color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{color:var(--muted);font-weight:500;text-align:left;padding:5px 4px;border-bottom:1px solid var(--line)}
+td{padding:5px 4px;border-bottom:1px solid #1b2430;font-family:var(--mono)}
+td.r,th.r{text-align:right}td.hot{color:var(--red)}
+.bursts{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:700px){.bursts{grid-template-columns:1fr}}
+.burst{border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--panel2);font-size:12px}
+.burst .bh{display:flex;justify-content:space-between;font-family:var(--mono);margin-bottom:6px}
+.burst .bh b{color:var(--red)}
+.burst ol{list-style:none;padding:0;margin:0;color:var(--muted)}
+.burst li{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.burst li code{color:#64748b;margin-right:6px}
+.note{color:var(--muted);font-size:12px}
+footer{color:var(--muted);font-size:11.5px;margin-top:20px;border-top:1px solid var(--line);padding-top:12px}
+@media print{body{background:#fff;color:#111}.card,.tile,.sig,.burst{background:#fff;border-color:#ccc;break-inside:avoid}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  {{if .R.User.Image}}<img src="{{.R.User.Image}}" alt="">{{end}}
+  <div>
+    <h1>{{.R.User.Name}} <span class="badge b-{{.R.Score.Verdict}}">{{.R.Score.Label}}</span> <span class="badge b-{{.R.Leaderboard.Action}}">leaderboard: {{.R.Leaderboard.Action}}</span></h1>
+    <div class="sub">{{num .R.User.Playcount}} scrobbles{{if .R.User.Registered}} · joined {{date .R.User.Registered}}{{end}}{{if .R.User.Country}} · {{.R.User.Country}}{{end}} · report generated {{.R.GeneratedAt.Format "2006-01-02 15:04 UTC"}}</div>
+  </div>
+</header>
+
+<div class="grid">
+<aside>
+  <div class="card v-{{.R.Score.Verdict}}">
+    <h2>Score</h2>
+    <div class="score"><div class="n">{{.R.Score.Value}}</div><div><div class="l">{{.R.Score.Label}}</div><div class="s">{{num0 .R.Stats.AvgPerDay}} scrobbles a day on average</div></div></div>
+    <p class="note">0–{{sub .ReviewAt 1}} clean · {{.ReviewAt}}–{{sub .SuspectAt 1}} needs review · {{.SuspectAt}}+ suspect</p>
+  </div>
+
+  <div class="card">
+    <h2>Leaderboard</h2>
+    <dl class="kv">
+      <dt>Action</dt><dd><span class="badge b-{{.R.Leaderboard.Action}}">{{.R.Leaderboard.Action}}</span></dd>
+      <dt>Last.fm count</dt><dd>{{num .R.Leaderboard.RawScrobbles}}</dd>
+      <dt>Adjusted count{{if .R.Leaderboard.Estimated}} (est.){{end}}</dt><dd>{{num .R.Leaderboard.AdjustedScrobbles}}</dd>
+      <dt>Removed</dt><dd>{{pct .R.Leaderboard.RemovedShare}}</dd>
+    </dl>
+    <p class="note" style="margin:10px 0 0">{{.R.Leaderboard.Reason}}</p>
+  </div>
+
+  <div class="card">
+    <h2>Measurement</h2>
+    <dl class="kv">
+      <dt>Scope</dt><dd>{{.R.Measurement.Scope}}</dd>
+      <dt>Range</dt><dd>{{date .R.Measurement.From}} → {{date .R.Measurement.To}}</dd>
+      <dt>Plays analyzed</dt><dd>{{num .R.Measurement.PlaysAnalyzed}}</dd>
+      <dt>History map</dt><dd>{{.R.Measurement.HistoryMonths}} months</dd>
+      <dt>Pages read</dt><dd>{{num .R.Measurement.Pages}}</dd>
+      <dt>From cache</dt><dd>{{num .R.Measurement.FromCache}}</dd>
+      <dt>Song lengths known</dt><dd>{{num .R.Integrity.DurationsKnown}} plays</dd>
+      <dt>Scan time</dt><dd>{{printf "%.1f" .R.Measurement.ElapsedSec}} s</dd>
+    </dl>
+    {{with .R.Measurement.Note}}<p class="note" style="margin:10px 0 0">{{.}}</p>{{end}}
+  </div>
+
+  <div class="card">
+    <h2>What was forgiven</h2>
+    <dl class="kv">
+      <dt>Double scrobbles</dt><dd>{{num .R.Integrity.Duplicates}}</dd>
+      <dt>Second-player plays</dt><dd>{{num .R.Integrity.SecondDevicePlays}}</dd>
+    </dl>
+    <p class="note" style="margin:10px 0 0">Copies of one play seconds apart, and plays that fit with up to {{.R.Params.Devices}} players running at once (phone plus a forgotten browser tab), never raise the score. Duplicates are dropped from the adjusted count.</p>
+  </div>
+</aside>
+
+<main>
+  <div class="card">
+    <h2>Signals</h2>
+    <p class="lead">Why the score is what it is: every point comes from one of these.</p>
+    {{range .R.Signals}}
+    <div class="sig k-{{.Kind}}"><span class="p">{{if .Points}}+{{.Points}}{{else}}ok{{end}}</span><div><div class="t">{{.Title}}</div><div class="d">{{.Detail}}</div></div></div>
+    {{else}}<p class="note">Nothing unusual.</p>{{end}}
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><div class="h">Scrobbles on Last.fm</div><div class="v">{{num .R.Stats.LastfmScrobbles}}</div><div class="f">since {{date .R.User.Registered}}</div></div>
+    <div class="tile {{if gt .R.Stats.AvgPerDay 400.0}}warn{{end}}"><div class="h">Average a day</div><div class="v">{{num0 .R.Stats.AvgPerDay}}</div><div class="f">one person, all day: about 400</div></div>
+    <div class="tile {{if gt .R.Stats.BusiestDay.Plays .R.Params.DayLimit}}warn{{end}}"><div class="h">Busiest day</div><div class="v">{{num .R.Stats.BusiestDay.Plays}}</div><div class="f">{{.R.Stats.BusiestDay.Date}}</div></div>
+    <div class="tile {{if gt .R.Stats.BusiestHour.Plays .R.Params.HourLimit}}warn{{end}}"><div class="h">Busiest hour</div><div class="v">{{num .R.Stats.BusiestHour.Plays}}</div><div class="f">{{datetime .R.Stats.BusiestHour.Start}}</div></div>
+    <div class="tile {{if .R.Stats.DaysOverLimit}}warn{{end}}"><div class="h">Days over {{.R.Params.DayLimit}}</div><div class="v">{{num .R.Stats.DaysOverLimit}}</div><div class="f">of {{num .R.Stats.DaysWithPlays}} days with plays</div></div>
+    <div class="tile {{if .R.Stats.HoursOverLimit}}warn{{end}}"><div class="h">Hours over {{.R.Params.HourLimit}}</div><div class="v">{{num .R.Stats.HoursOverLimit}}</div><div class="f">faster than a song a minute</div></div>
+    <div class="tile {{if .R.Stats.NoSleepDays}}warn{{end}}"><div class="h">Days with no sleep</div><div class="v">{{num .R.Stats.NoSleepDays}}</div><div class="f">plays in {{.R.Params.NoSleepHours}}+ different hours</div></div>
+    <div class="tile {{if .R.Stats.MonthsOverLimit}}warn{{end}}"><div class="h">Months over the limit</div><div class="v">{{.R.Stats.MonthsOverLimit}} / {{.R.Stats.MonthsTotal}}</div><div class="f">averaging over {{.R.Params.DayLimit}} a day</div></div>
+    <div class="tile {{if .R.Integrity.ExcessPlays}}warn{{else}}ok{{end}}"><div class="h">Needs a 3rd player</div><div class="v">{{num .R.Integrity.ExcessPlays}}</div><div class="f">{{pct .R.Integrity.ExcessShare}} of plays analyzed</div></div>
+    <div class="tile info"><div class="h">Double scrobbles</div><div class="v">{{num .R.Integrity.Duplicates}}</div><div class="f">removed, not punished</div></div>
+    <div class="tile info"><div class="h">Second player</div><div class="v">{{num .R.Integrity.SecondDevicePlays}}</div><div class="f">accepted overlaps</div></div>
+    <div class="tile {{if gt .R.Integrity.LoopShare 0.4}}warn{{end}}"><div class="h">Loops</div><div class="v">{{pct .R.Integrity.LoopShare}}</div><div class="f">repeat a song from the last {{div .R.Params.LoopWindowSeconds 60}} min</div></div>
+  </div>
+
+  <div class="card">
+    <h2>The whole history, month by month</h2>
+    <p class="lead">Plays a day in each month{{if eq .R.Measurement.Scope "sample"}}, from Last.fm's own monthly totals{{end}}. A bar above the dashed lines is a month no one person could have listened to.</p>
+    {{.MonthSVG}}
+    <div class="legend">Plays a day: {{range .Scale}}<span><i style="background:{{.Color}}"></i>{{.Label}}</span>{{end}}</div>
+  </div>
+
+  <div class="card">
+    <h2>Every day, one square each</h2>
+    <p class="lead">{{if eq .R.Measurement.Scope "sample"}}A sample: {{date .R.Measurement.From}} to {{date .R.Measurement.To}}.{{else}}The whole history.{{end}} Hover a square for its plays, hours and busiest hour. Outlined: plays in {{.R.Params.NoSleepHours}}+ different hours. All days UTC.</p>
+    {{range .Years}}<div class="year"><div class="yh">{{.Year}} <span>{{num .Plays}} plays</span></div>{{.SVG}}</div>{{end}}
+    <div class="legend">Plays a day: {{range .Scale}}<span><i style="background:{{.Color}}"></i>{{.Label}}</span>{{end}}</div>
+  </div>
+
+  <div class="card">
+    <h2>When in the week</h2>
+    <p class="lead">Plays by weekday and hour (UTC). The quietest six hours in a row (from {{printf "%02d" .R.Integrity.QuietStartHour}}:00) hold {{pct .R.Integrity.QuietShare}} of plays: someone who sleeps leaves a few percent there; plays spread evenly around the clock leave about 25%.</p>
+    {{.WeekSVG}}
+  </div>
+
+  <div class="two">
+    <div class="card">
+      <h2>Time between plays</h2>
+      <p class="lead">A song takes minutes. Plays seconds apart are copies, skips, or software.</p>
+      {{range $i, $g := .R.Charts.Gaps}}<div class="bar"><span>{{$g.Label}}</span><div class="track"><div class="fill {{if lt $i 3}}hot{{end}}" style="width:{{barw $g.Share}}%"></div></div><span class="num">{{num $g.Count}} · {{pct $g.Share}}</span></div>{{end}}
+      <dl class="kv" style="margin-top:12px">
+        <dt>Different songs at one second</dt><dd>{{num .R.Integrity.SameSecondPlays}} ({{pct .R.Integrity.SameSecondShare}})</dd>
+        <dt>Bursts ({{.R.Params.BurstMinPlays}}+ plays in a minute)</dt><dd>{{num .R.Integrity.Bursts}}, most {{.R.Integrity.BurstMax}}</dd>
+        <dt>Same-song loops seconds apart</dt><dd>{{num .R.Integrity.RapidLoopPlays}}</dd>
+        <dt>Most common gap between songs</dt><dd>{{if .R.Integrity.RegularGapSample}}{{.R.Integrity.RegularGapSeconds}}s ({{pct .R.Integrity.RegularGapShare}}){{else}}–{{end}}</dd>
+      </dl>
+    </div>
+    <div class="card">
+      <h2>Busiest days</h2>
+      <p class="lead">Plays, how many different hours of the day held them, and the busiest single hour.</p>
+      <table><tr><th>Day (UTC)</th><th class="r">Plays</th><th class="r">Hours</th><th class="r">Busiest hour</th></tr>
+      {{range .R.Charts.BusiestDays}}<tr><td>{{.Date}}</td><td class="r {{if gt .Plays $.R.Params.DayLimit}}hot{{end}}">{{num .Plays}}</td><td class="r {{if ge .Hours $.R.Params.NoSleepHours}}hot{{end}}">{{.Hours}}</td><td class="r {{if gt .PeakHour $.R.Params.HourLimit}}hot{{end}}">{{.PeakHour}}</td></tr>{{end}}
+      </table>
+    </div>
+  </div>
+
+  {{if .R.Charts.Bursts}}
+  <div class="card">
+    <h2>Densest bursts</h2>
+    <p class="lead">The most plays that landed inside one minute, with the songs as Last.fm recorded them.</p>
+    <div class="bursts">
+    {{range .R.Charts.Bursts}}<div class="burst"><div class="bh"><span>{{datetime .Start}}</span><b>{{.Plays}} plays in {{sub64 .End .Start}}s</b></div><ol>{{range .Tracks}}<li><code>{{clock .TS}}</code>{{.Artist}} — {{.Title}}</li>{{end}}</ol></div>{{end}}
+    </div>
+  </div>
+  {{end}}
+
+  {{if .R.Charts.TopRepeats}}
+  <div class="card">
+    <h2>Most repeated songs</h2>
+    <p class="lead">Songs with the most plays that were loops seconds apart or needed a third player.</p>
+    <table><tr><th>Song</th><th class="r">Plays</th><th class="r">Impossible</th></tr>
+    {{range .R.Charts.TopRepeats}}<tr><td>{{.Artist}} — {{.Title}}</td><td class="r">{{num .Plays}}</td><td class="r {{if .RapidPlays}}hot{{end}}">{{num .RapidPlays}}</td></tr>{{end}}
+    </table>
+  </div>
+  {{end}}
+</main>
+</div>
+
+<footer>
+  Method: copies of one song within {{.R.Params.DupWindowSeconds}}s (up to {{.R.Params.MaxCopies}}) are double scrobbles and are removed. Every other play is credited with the least time a player needs before Last.fm accepts it (half the song, at most 4 minutes; {{.R.Params.MinPlaySeconds}}s when the length is unknown) and packed onto at most {{.R.Params.Devices}} players; plays that do not fit needed a third player at once. Days over {{.R.Params.DayLimit}} plays and hours over {{.R.Params.HourLimit}} are beyond one person. All times UTC. Report format v{{.R.Version}}.
+</footer>
+</div>
+</body>
+</html>
