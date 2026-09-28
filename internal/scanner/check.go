@@ -290,9 +290,15 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 	// Round 3, in one go: split the densest multi-month periods into months,
 	// and read a window from the middle of the densest periods (their newest
 	// plays alone might not show the rest). Skipped when round 2 was slow, so
-	// the check still answers inside the deadline with what it has.
+	// the check still answers inside the deadline with what it has, and when
+	// rounds 1–2 already prove the account suspect: on the big fake accounts
+	// each request takes ~3 s and more evidence cannot change the decision.
+	decided := false
+	if pre, err := s.assemble(info, top, topErr, distinct, units, append([]*unit(nil), units...), windows, since, now, int(requests.Load()), o); err == nil {
+		decided = pre.Score.Verdict == "suspect" && pre.Gate.Complete
+	}
 	jobs = nil
-	if time.Since(started) < o.Deadline*55/100 {
+	if !decided && time.Since(started) < o.Deadline*55/100 {
 		hot := append([]*unit(nil), units...)
 		sort.SliceStable(hot, func(a, b int) bool { return hot[a].perDay() > hot[b].perDay() })
 		split := 0
@@ -337,6 +343,7 @@ func (s *Scanner) check1(parent context.Context, user string, o CheckOptions) (*
 	r, err := s.assemble(info, top, topErr, distinct, units, leaves, windows, since, now, int(requests.Load()), o)
 	if r != nil {
 		r.Gate.RoundsMS = roundsMS
+		r.Gate.DecidedEarly = decided
 	}
 	return r, err
 }

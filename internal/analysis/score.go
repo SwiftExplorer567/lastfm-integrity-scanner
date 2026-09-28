@@ -58,11 +58,14 @@ func score(r *Report, extra []Signal) {
 			fmt.Sprintf("%s of plays came less than fifteen seconds after the one before, after removing double scrobbles", pct(ig.UnderFifteenShare)),
 			capInt(round(50*ig.UnderFifteenShare), 15))
 	}
-	if ig.SameSecondShare >= 0.01 && ig.SameSecondPlays >= 30 {
+	// Honest accounts reach about 1% here too (offline caches flushed in one
+	// batch: HasanJWS measured 0.96% and 1.0% on two runs), so points rise
+	// gradually from 1% instead of jumping in at a threshold.
+	if ig.SameSecondShare > 0.01 && ig.SameSecondPlays >= 30 {
 		add("same_second", "fake", "Different songs at the same second",
 			fmt.Sprintf("%s of plays share their second with another song (%s instants, %s with three or more)",
 				pct(ig.SameSecondShare), num(ig.SameSecondInstants), num(ig.SameSecondTriples)),
-			capInt(4+round(400*ig.SameSecondShare), 12))
+			capInt(round(400*(ig.SameSecondShare-0.01)), 12))
 	}
 	// Real listening puts under 2% of gaps between different songs on any one
 	// exact second (HasanJWS 0.9–1.0%, even ChAelitaNicole 1.7%); a script

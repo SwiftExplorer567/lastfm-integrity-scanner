@@ -217,6 +217,9 @@ type Gate struct {
 	SampledPlay int     `json:"sampled_plays"`
 	Windows     int     `json:"windows"`
 	RoundsMS    []int64 `json:"rounds_ms"` // wall time of each request round
+	// DecidedEarly: rounds 1–2 already proved the account suspect, so the
+	// refining round was skipped.
+	DecidedEarly bool `json:"decided_early,omitempty"`
 
 	// Lifetime per-song totals (user.getTopTracks, period=overall).
 	DistinctTracks  int64           `json:"distinct_tracks"`
